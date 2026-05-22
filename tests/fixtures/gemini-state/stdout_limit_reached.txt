@@ -1,0 +1,9 @@
+Session Stats
+  Auth Method: Signed in with Google (user@example.com)
+  Tier: Pro
+  Google AI Credits: 0
+  
+Limit reached, resets in 5h 30m
+Usage limit: 1,000
+Usage limits span all sessions and reset daily.
+Please /auth to upgrade or switch to an API key to continue.

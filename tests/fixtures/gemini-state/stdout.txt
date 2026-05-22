@@ -1,0 +1,17 @@
+Session Stats
+  Auth Method: Signed in with Google (user@example.com)
+  Tier: Pro
+  Google AI Credits: 1,234
+  Tool Calls: 15 (✓ 12 x 3)
+  Success Rate: 80.0%
+  User Agreement: 90.0% (10 reviewed)
+  
+Performance
+  Wall Time: 2m 15s
+  Agent Active: 45s
+  API Time: 30s (66.7%)
+  Tool Time: 15s (33.3%)
+
+15% used (Limit resets in 3h 12m)
+Usage limit: 1,000
+Usage limits span all sessions and reset daily.
