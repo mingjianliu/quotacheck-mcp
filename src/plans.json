@@ -1,0 +1,23 @@
+{
+  "anthropic": {
+    "max-20x": {
+      "sessionTokens": 220000000,
+      "weeklyTokens": 800000000,
+      "weeklyOpusTokens": 200000000,
+      "sessionWindowHours": 5
+    },
+    "max-5x": {
+      "sessionTokens": 55000000,
+      "weeklyTokens": 200000000,
+      "weeklyOpusTokens": 50000000,
+      "sessionWindowHours": 5
+    },
+    "pro": {
+      "sessionTokens": 11000000,
+      "weeklyTokens": 40000000,
+      "weeklyOpusTokens": 0,
+      "sessionWindowHours": 5
+    }
+  },
+  "_note": "Numbers are best-effort approximations of public Anthropic plan limits as of 2026-05. Refresh seasonally. The claude-code collector will pick a plan via config or fall back to 'pro'."
+}
