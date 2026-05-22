@@ -1,0 +1,30 @@
+{
+  "models": [
+    {
+      "name": "gemini-2.5-pro",
+      "session": {
+        "used": 12,
+        "limit": 100,
+        "resets_at": "2026-05-22T05:00:00Z"
+      },
+      "weekly": {
+        "used": 340,
+        "limit": 1000,
+        "resets_at": "2026-05-26T00:00:00Z"
+      }
+    },
+    {
+      "name": "gemini-2.5-flash",
+      "session": {
+        "used": 30,
+        "limit": 500,
+        "resets_at": "2026-05-22T05:00:00Z"
+      },
+      "weekly": {
+        "used": 800,
+        "limit": 5000,
+        "resets_at": "2026-05-26T00:00:00Z"
+      }
+    }
+  ]
+}
