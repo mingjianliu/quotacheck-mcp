@@ -146,12 +146,10 @@ export async function collectClaudeCode(
   }
 
   const subModels: SubModelBucket[] = [];
-  const subKeys: Array<
-    ["opus" | "sonnet" | "omelette", keyof UsageApiResponse]
-  > = [
+  const subKeys: Array<[string, keyof UsageApiResponse]> = [
     ["opus", "seven_day_opus"],
     ["sonnet", "seven_day_sonnet"],
-    ["omelette", "seven_day_omelette"],
+    ["claude design", "seven_day_omelette"],
   ];
   for (const [name, key] of subKeys) {
     const b = usage[key] as UsageBucket | null | undefined;
