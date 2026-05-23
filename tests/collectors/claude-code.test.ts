@@ -1,33 +1,112 @@
-import { describe, it, expect } from "vitest";
-import { join } from "node:path";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { collectClaudeCode } from "../../src/collectors/claude-code.js";
+import { execFile } from "node:child_process";
+import { request } from "node:https";
 
-const fixtureHome = join(process.cwd(), "tests", "fixtures");
+vi.mock("node:child_process", () => ({
+  execFile: vi.fn(),
+}));
+
+vi.mock("node:https", () => ({
+  request: vi.fn(),
+}));
 
 describe("collectClaudeCode", () => {
-  it("aggregates token usage from all jsonl files", async () => {
-    const snap = await collectClaudeCode({
-      homeDir: fixtureHome,
-      projectsDir: join(fixtureHome, "claude-projects"),
-      plan: "pro",
-      now: new Date("2026-05-22T02:00:00Z"),
-    });
-
-    expect(snap.source).toBe("claude-code");
-    expect(snap.error).toBeUndefined();
-    // sonnet: (1000+200)+(2000+400) = 3600; opus: 500+100 = 600; total = 4200
-    expect(snap.session?.used).toBe(4200);
-    expect(snap.session?.limit).toBe(11000000);
-    expect(snap.subModels?.find((m) => m.name === "opus")?.used).toBe(600);
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it("returns error snapshot when projects dir is missing", async () => {
-    const snap = await collectClaudeCode({
-      homeDir: fixtureHome,
-      projectsDir: join(fixtureHome, "does-not-exist"),
-      plan: "pro",
-      now: new Date(),
+  it("fetches usage from Anthropic API and parses buckets", async () => {
+    // Mock execFile for keychain token
+    vi.mocked(execFile).mockImplementation((cmd, args, opts, callback) => {
+      const cb = (typeof opts === "function" ? opts : callback) as any;
+      cb(null, JSON.stringify({ claudeAiOauth: { accessToken: "fake-token" } }), "");
+      return {} as any;
     });
-    expect(snap.error).toMatch(/projects/i);
+
+    // Mock https request
+    const mockRes = {
+      statusCode: 200,
+      on: vi.fn((event, handler) => {
+        if (event === "data") {
+          handler(JSON.stringify({
+            five_hour: { utilization: 10, resets_at: "2026-05-23T00:00:00Z" },
+            seven_day: { utilization: 20, resets_at: "2026-05-24T00:00:00Z" },
+            seven_day_opus: { utilization: 30, resets_at: "2026-05-24T00:00:00Z" },
+            extra_usage: {
+              is_enabled: true,
+              monthly_limit: 2000,
+              used_credits: 500,
+              utilization: 25,
+              currency: "USD"
+            }
+          }));
+        }
+        if (event === "end") handler();
+      })
+    };
+
+    const mockReq = {
+      on: vi.fn(),
+      end: vi.fn(),
+      destroy: vi.fn()
+    };
+
+    vi.mocked(request).mockImplementation((options, callback) => {
+      if (callback) callback(mockRes as any);
+      return mockReq as any;
+    });
+
+    const snap = await collectClaudeCode();
+    expect(snap.source).toBe("claude-code");
+    expect(snap.error).toBeUndefined();
+    expect(snap.session?.used).toBe(10);
+    expect(snap.weekly?.used).toBe(20);
+    expect(snap.subModels?.find(m => m.name === "opus")?.used).toBe(30);
+    expect(snap.subModels?.find(m => m.name === "extra_usage_USD")?.used).toBe(500);
+    expect(snap.subModels?.find(m => m.name === "extra_usage_USD")?.limit).toBe(2000);
+  });
+
+  it("returns error snapshot when keychain token is missing", async () => {
+    vi.mocked(execFile).mockImplementation((cmd, args, opts, callback) => {
+      const cb = (typeof opts === "function" ? opts : callback) as any;
+      cb(new Error("Keychain error"), "", "Keychain error");
+      return {} as any;
+    });
+
+    const snap = await collectClaudeCode();
+    expect(snap.source).toBe("claude-code");
+    expect(snap.error).toMatch(/keychain error/i);
+  });
+
+  it("returns error snapshot when API rate limits", async () => {
+    vi.mocked(execFile).mockImplementation((cmd, args, opts, callback) => {
+      const cb = (typeof opts === "function" ? opts : callback) as any;
+      cb(null, JSON.stringify({ claudeAiOauth: { accessToken: "fake-token" } }), "");
+      return {} as any;
+    });
+
+    const mockRes = {
+      statusCode: 429,
+      on: vi.fn((event, handler) => {
+        if (event === "data") handler(JSON.stringify({ error: { message: "Rate limited" } }));
+        if (event === "end") handler();
+      })
+    };
+
+    const mockReq = {
+      on: vi.fn(),
+      end: vi.fn(),
+      destroy: vi.fn()
+    };
+
+    vi.mocked(request).mockImplementation((options, callback) => {
+      if (callback) callback(mockRes as any);
+      return mockReq as any;
+    });
+
+    const snap = await collectClaudeCode();
+    expect(snap.source).toBe("claude-code");
+    expect(snap.error).toMatch(/HTTP 429/);
   });
 });

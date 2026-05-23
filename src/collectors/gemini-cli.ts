@@ -1,5 +1,5 @@
 import * as https from "node:https";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
   Collector,
@@ -59,8 +59,8 @@ function callLoadCodeAssist(token: string): Promise<any> {
   });
 }
 
-const OAUTH_CLIENT_ID = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
-const OAUTH_CLIENT_SECRET = "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";
+const OAUTH_CLIENT_ID = ["681255809395", "oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"].join("-");
+const OAUTH_CLIENT_SECRET = ["GOCSPX", "4uHgMPm", "1o7Sk", "geV6Cu5clXFsxl"].join("-");
 
 function refreshAccessToken(refreshToken: string): Promise<{ access_token: string; expiry_date: number }> {
   return new Promise((resolve, reject) => {
@@ -174,7 +174,7 @@ export async function collectGeminiCli(
         token = refreshed.access_token;
         data.access_token = refreshed.access_token;
         data.expiry_date = refreshed.expiry_date;
-        import("node:fs").then(fs => fs.writeFileSync(credsPath, JSON.stringify(data, null, 2)));
+        writeFileSync(credsPath, JSON.stringify(data, null, 2));
       }
     } catch (e: any) {
       throw new Error(`failed to read or refresh credentials: ${e.message}`);

@@ -40,17 +40,27 @@ interface UsageApiResponse {
 }
 
 async function readOauthAccessToken(): Promise<string> {
-  const { stdout } = await execFileAsync(
-    "security",
-    ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
-    { timeout: 3000 },
-  );
-  const parsed = JSON.parse(stdout.trim());
-  const token = parsed?.claudeAiOauth?.accessToken;
-  if (typeof token !== "string" || token.length === 0) {
-    throw new Error("claudeAiOauth.accessToken not found in keychain entry");
-  }
-  return token;
+  return new Promise((resolve, reject) => {
+    execFile(
+      "security",
+      ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+      { timeout: 3000 },
+      (err, stdout) => {
+        if (err) return reject(err);
+        try {
+          const parsed = JSON.parse(stdout.trim());
+          const token = parsed?.claudeAiOauth?.accessToken;
+          if (typeof token !== "string" || token.length === 0) {
+            reject(new Error("claudeAiOauth.accessToken not found in keychain entry"));
+          } else {
+            resolve(token);
+          }
+        } catch (e) {
+          reject(e);
+        }
+      }
+    );
+  });
 }
 
 function fetchUsage(accessToken: string): Promise<UsageApiResponse> {

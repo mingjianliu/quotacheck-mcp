@@ -42,7 +42,7 @@ describe("runCollectors", () => {
       fake("claude-code", { session: { used: 1, limit: 10, pct: 10 } }),
       fake("gemini-cli", {}),
     ];
-    const out = await runCollectors(collectors, ctx);
+    const out = await runCollectors(collectors, ctx, { forceRefresh: true });
     expect(out.map((s) => s.source).sort()).toEqual([
       "claude-code",
       "gemini-cli",
@@ -52,7 +52,7 @@ describe("runCollectors", () => {
 
   it("isolates errors — one failure does not block other sources", async () => {
     const collectors = [failing("gemini-web"), fake("antigravity", {})];
-    const out = await runCollectors(collectors, ctx);
+    const out = await runCollectors(collectors, ctx, { forceRefresh: true });
     const web = out.find((s) => s.source === "gemini-web");
     const ag = out.find((s) => s.source === "antigravity");
     expect(web?.error).toBe("boom");
@@ -67,6 +67,7 @@ describe("runCollectors", () => {
     ];
     const out = await runCollectors(collectors, ctx, {
       sources: ["claude-code"],
+      forceRefresh: true,
     });
     expect(out.map((s) => s.source)).toEqual(["claude-code"]);
   });

@@ -1,41 +1,123 @@
-import { describe, it, expect } from "vitest";
-import { join } from "node:path";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { collectGeminiCli } from "../../src/collectors/gemini-cli.js";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { request } from "node:https";
+
+vi.mock("node:fs", () => ({
+  readFileSync: vi.fn(),
+  writeFileSync: vi.fn(),
+  existsSync: vi.fn(),
+}));
+
+vi.mock("node:https", () => ({
+  request: vi.fn(),
+}));
 
 describe("collectGeminiCli", () => {
-  it("parses session quota from gemini state (successful stats)", async () => {
-    const snap = await collectGeminiCli({
-      stateDir: join(process.cwd(), "tests", "fixtures", "gemini-state"),
-      now: new Date("2026-05-22T02:00:00Z"),
-      mockFile: "stdout.txt",
-    });
-    expect(snap.source).toBe("gemini-cli");
-    expect(snap.error).toBeUndefined();
-    expect(snap.session?.used).toBe(150);
-    expect(snap.session?.limit).toBe(1000);
-    expect(snap.session?.pct).toBe(15);
-    expect(snap.session?.resetsAt).toBeDefined();
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it("parses session quota from gemini state (limit reached)", async () => {
-    const snap = await collectGeminiCli({
-      stateDir: join(process.cwd(), "tests", "fixtures", "gemini-state"),
-      now: new Date("2026-05-22T02:00:00Z"),
-      mockFile: "stdout_limit_reached.txt",
+  it("refreshes token, fetches quota from API, and parses buckets", async () => {
+    // Mock fs for oauth_creds.json
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      access_token: "expired",
+      refresh_token: "fake-refresh-token",
+      expiry_date: 1 // Expired but truthy
+    }));
+    vi.mocked(existsSync).mockReturnValue(true);
+
+    // We expect two HTTPS requests: 1. token refresh, 2. retrieveUserQuota
+    let requestCount = 0;
+
+    vi.mocked(request).mockImplementation((options, callback) => {
+      requestCount++;
+      const path = (options as any).path || "";
+      const isRefresh = path.includes("token");
+      const isLoadCodeAssist = path.includes("loadCodeAssist");
+
+      const mockRes = {
+        statusCode: 200,
+        on: vi.fn((event, handler) => {
+          if (event === "data") {
+            if (isRefresh) {
+              handler(JSON.stringify({
+                access_token: "new-access-token",
+                expires_in: 3600
+              }));
+            } else if (isLoadCodeAssist) {
+              handler(JSON.stringify({
+                cloudaicompanionProject: "fake-project-123"
+              }));
+            } else {
+              handler(JSON.stringify({
+                buckets: [
+                  {
+                    modelId: "gemini-2.5-flash",
+                    remainingFraction: 0.20,
+                    resetTime: "2026-05-23T00:00:00Z"
+                  },
+                  {
+                    modelId: "gemini-2.5-pro",
+                    remainingFraction: 0,
+                    resetTime: "2026-05-23T00:00:00Z"
+                  }
+                ]
+              }));
+            }
+          }
+          if (event === "end") handler();
+        })
+      };
+
+      if (callback) callback(mockRes as any);
+
+      return {
+        on: vi.fn(),
+        write: vi.fn(),
+        end: vi.fn(),
+        destroy: vi.fn()
+      } as any;
     });
+
+    const snap = await collectGeminiCli({ homeDir: "/fake/home" } as any);
     expect(snap.source).toBe("gemini-cli");
     expect(snap.error).toBeUndefined();
-    expect(snap.session?.used).toBe(1000);
-    expect(snap.session?.limit).toBe(1000);
-    expect(snap.session?.pct).toBe(100);
-    expect(snap.session?.resetsAt).toBeDefined();
+    expect(snap.subModels?.length).toBe(2);
+    expect(snap.subModels?.find(m => m.name === "Gemini 2.5 Flash")?.used).toBe(80);
+    expect(snap.subModels?.find(m => m.name === "Gemini 2.5 Pro")?.used).toBe(100);
+    expect(writeFileSync).toHaveBeenCalled(); // Token was refreshed and saved
   });
 
-  it("returns error when state dir is missing", async () => {
-    const snap = await collectGeminiCli({
-      stateDir: "/does/not/exist",
-      now: new Date(),
-    });
-    expect(snap.error).toBeTruthy();
+  it("returns error snapshot when oauth_creds.json is missing", async () => {
+    vi.mocked(existsSync).mockReturnValue(false);
+
+    const snap = await collectGeminiCli({ homeDir: "/fake/home" } as any);
+    expect(snap.source).toBe("gemini-cli");
+    expect(snap.error).toMatch(/gemini credentials not found/i);
+  });
+
+  it("returns error snapshot when API request fails", async () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      access_token: "valid",
+      refresh_token: "fake-refresh-token",
+      expiry_date: Date.now() + 100000 // Valid
+    }));
+
+    const mockReq = {
+      on: vi.fn((event, handler) => {
+        if (event === "error") handler(new Error("Network Error"));
+      }),
+      write: vi.fn(),
+      end: vi.fn(),
+      destroy: vi.fn()
+    };
+
+    vi.mocked(request).mockReturnValue(mockReq as any);
+
+    const snap = await collectGeminiCli({ homeDir: "/fake/home" } as any);
+    expect(snap.source).toBe("gemini-cli");
+    expect(snap.error).toMatch(/Network Error/);
   });
 });

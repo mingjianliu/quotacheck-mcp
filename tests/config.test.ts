@@ -25,7 +25,7 @@ describe("loadConfig", () => {
       "antigravity",
     ]);
     expect(cfg.playwrightTimeoutMs).toBe(8000);
-    expect(cfg.antigravityUsageBinary).toBe("antigravity-usage");
+    expect(cfg.antigravityUsageBinary).toBe("agy");
     expect(cfg.chromeProfilePath).toContain("Chrome");
   });
 
@@ -42,7 +42,7 @@ describe("loadConfig", () => {
     const cfg = loadConfig({ homeDir: tmp });
     expect(cfg.playwrightTimeoutMs).toBe(15000);
     expect(cfg.enabledSources).toEqual(["claude-code"]);
-    expect(cfg.antigravityUsageBinary).toBe("antigravity-usage");
+    expect(cfg.antigravityUsageBinary).toBe("agy");
   });
 
   it("throws on invalid JSON", () => {

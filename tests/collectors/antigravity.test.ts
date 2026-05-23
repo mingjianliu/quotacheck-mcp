@@ -1,46 +1,122 @@
-import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import {
-  parseAntigravity,
-  collectAntigravity,
-} from "../../src/collectors/antigravity.js";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { collectAntigravity } from "../../src/collectors/antigravity.js";
+import { exec } from "node:child_process";
+import { request } from "node:https";
 
-const fixture = readFileSync(
-  join(process.cwd(), "tests", "fixtures", "antigravity-usage.json"),
-  "utf8",
-);
+vi.mock("node:child_process", () => ({
+  exec: vi.fn(),
+}));
 
-describe("parseAntigravity", () => {
-  it("produces a QuotaSnapshot with subModels populated", () => {
-    const snap = parseAntigravity(fixture, new Date("2026-05-22T02:00:00Z"));
-    expect(snap.source).toBe("antigravity");
-    expect(snap.subModels?.map((m) => m.name).sort()).toEqual([
-      "gemini-2.5-flash",
-      "gemini-2.5-pro",
-    ]);
-    const pro = snap.subModels?.find((m) => m.name === "gemini-2.5-pro");
-    expect(pro?.used).toBe(340);
-    expect(pro?.limit).toBe(1000);
-    expect(pro?.pct).toBe(34);
-  });
-});
+vi.mock("node:https", () => ({
+  request: vi.fn(),
+}));
 
 describe("collectAntigravity", () => {
-  it("returns error snapshot when binary is missing", async () => {
-    const snap = await collectAntigravity({
-      binary: "/does/not/exist/antigravity-usage",
-      now: new Date(),
-    });
-    expect(snap.error).toMatch(/antigravity-usage/);
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it("returns error snapshot when binary outputs invalid JSON", async () => {
-    const snap = await collectAntigravity({
-      binary: "echo",
-      args: ["not-json"],
-      now: new Date(),
+  it("produces a QuotaSnapshot with subModels populated", async () => {
+    // Mock exec for ps aux and lsof/ss
+    vi.mocked(exec).mockImplementation((cmd, opts, callback) => {
+      const cb = (typeof opts === "function" ? opts : callback) as any;
+      if (cmd.includes("ps aux")) {
+        cb(null, "user 1234 0.0 0.0 123 456 ? S 00:00:00 language_server --csrf_token=fake-token", "");
+      } else if (cmd.includes("lsof") || cmd.includes("ss")) {
+        // Return fake ports
+        cb(null, "127.0.0.1:9090", "");
+      } else {
+        cb(null, "", "");
+      }
+      return {} as any;
     });
-    expect(snap.error).toMatch(/parse/i);
+
+    // Mock https request
+    const mockRes = {
+      statusCode: 200,
+      on: vi.fn((event, handler) => {
+        if (event === "data") {
+          handler(JSON.stringify({
+            userStatus: {
+              cascadeModelConfigData: {
+                clientModelConfigs: [
+                  {
+                    name: "gemini-2.5-flash",
+                    quotaInfo: { remainingFraction: 0.66 }
+                  },
+                  {
+                    name: "gemini-2.5-pro",
+                    quotaInfo: { remainingFraction: 0 }
+                  }
+                ]
+              }
+            }
+          }));
+        }
+        if (event === "end") {
+          handler();
+        }
+      })
+    };
+
+    const mockReq = {
+      on: vi.fn(),
+      write: vi.fn(),
+      end: vi.fn((cb: any) => {
+        if (cb) cb();
+      }),
+      destroy: vi.fn()
+    };
+
+    vi.mocked(request).mockImplementation((options, callback) => {
+      if (callback) callback(mockRes as any);
+      return mockReq as any;
+    });
+
+    const snap = await collectAntigravity();
+    expect(snap.source).toBe("antigravity");
+    expect(snap.error).toBeUndefined();
+    expect(snap.subModels?.length).toBe(2);
+    expect(snap.subModels?.find(m => m.name === "gemini-2.5-flash")?.used).toBe(34);
+    expect(snap.subModels?.find(m => m.name === "gemini-2.5-pro")?.used).toBe(100);
+  });
+
+  it("returns error when server info is not found", async () => {
+    vi.mocked(exec).mockImplementation((cmd, opts, callback) => {
+      const cb = (typeof opts === "function" ? opts : callback) as any;
+      cb(null, "nothing interesting here", "");
+      return {} as any;
+    });
+
+    const snap = await collectAntigravity();
+    expect(snap.source).toBe("antigravity");
+    expect(snap.error).toMatch(/Antigravity language server not found/);
+  });
+
+  it("returns error when gRPC request fails", async () => {
+    vi.mocked(exec).mockImplementation((cmd, opts, callback) => {
+      const cb = (typeof opts === "function" ? opts : callback) as any;
+      if (cmd.includes("ps aux")) {
+        cb(null, "user 1234 0.0 0.0 123 456 ? S 00:00:00 language_server --csrf_token=fake-token", "");
+      } else if (cmd.includes("lsof") || cmd.includes("ss")) {
+        cb(null, "127.0.0.1:9090", "");
+      }
+      return {} as any;
+    });
+
+    const mockReq = {
+      on: vi.fn((event, handler) => {
+        if (event === "error") handler(new Error("Network Error"));
+      }),
+      write: vi.fn(),
+      end: vi.fn(),
+      destroy: vi.fn()
+    };
+
+    vi.mocked(request).mockReturnValue(mockReq as any);
+
+    const snap = await collectAntigravity();
+    expect(snap.source).toBe("antigravity");
+    expect(snap.error).toMatch(/Network Error|Failed to contact/);
   });
 });
