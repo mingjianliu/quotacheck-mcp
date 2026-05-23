@@ -44,84 +44,114 @@ export function parseGeminiWeb(html: string, now: Date): QuotaSnapshot {
   };
 }
 
-interface CapturedResponse {
+interface BatchCapture {
   url: string;
-  body: unknown;
+  rpcId: string;
+  payload: unknown;
 }
 
-// Walks a JSON value looking for an array of objects each containing a model
-// name and quota fields. Returns null when nothing recognisable is found.
-function tryParseXhrBodies(
-  responses: CapturedResponse[],
-  now: Date,
-): QuotaSnapshot | null {
-  for (const { body } of responses) {
-    if (!body || typeof body !== "object") continue;
+// Gemini batchexecute responses start with )]}'\n (XSSI prefix), then
+// size-prefixed JSON chunks. Each chunk is an array of frames; frames with
+// structure ["wrb.fr", rpcId, escapedPayload, ...] carry the real data.
+export function parseBatchExecute(
+  text: string,
+): Array<{ rpcId: string; payload: unknown }> {
+  if (!text.startsWith(")]}'")) return [];
 
-    const models = extractModelArray(body as Record<string, unknown>);
-    if (models && models.length > 0) {
-      const subModels: SubModelBucket[] = models.flatMap((m) => {
-        const name =
-          (m.modelId as string | undefined) ??
-          (m.modelName as string | undefined) ??
-          (m.name as string | undefined);
-        if (!name) return [];
+  // Strip )]}'\ n
+  let rest = text.slice(text.indexOf("\n") + 1).trimStart();
+  const results: Array<{ rpcId: string; payload: unknown }> = [];
 
-        const qi = m.quotaInfo as Record<string, unknown> | undefined;
-        const rawLimit =
-          (m.limit as number | undefined) ??
-          (qi?.limit as number | undefined) ??
-          100;
-        const rawUsed =
-          (m.used as number | undefined) ??
-          (qi?.used as number | undefined) ??
-          (qi?.remainingFraction != null
-            ? Math.round(rawLimit * (1 - (qi.remainingFraction as number)))
-            : 0);
+  while (rest.length > 0) {
+    const nlIdx = rest.indexOf("\n");
+    if (nlIdx === -1) break;
 
-        return [
-          {
-            name,
-            used: rawUsed,
-            limit: rawLimit,
-            pct: rawLimit > 0 ? (rawUsed / rawLimit) * 100 : 0,
-          },
-        ];
-      });
+    const sizeStr = rest.slice(0, nlIdx).trim();
+    const size = parseInt(sizeStr, 10);
+    if (isNaN(size) || size <= 0) break;
 
-      if (subModels.length > 0) {
-        return {
-          source: "gemini-web",
-          collectedAt: now.toISOString(),
-          subModels,
-        };
-      }
+    rest = rest.slice(nlIdx + 1);
+    if (rest.length < size) break;
+
+    const chunk = rest.slice(0, size);
+    rest = rest.slice(size).trimStart();
+
+    let frames: unknown;
+    try {
+      frames = JSON.parse(chunk);
+    } catch {
+      continue;
     }
-  }
-  return null;
-}
+    if (!Array.isArray(frames)) continue;
 
-function extractModelArray(
-  obj: Record<string, unknown>,
-): Record<string, unknown>[] | null {
-  for (const key of Object.keys(obj)) {
-    const val = obj[key];
-    if (Array.isArray(val) && val.length > 0) {
-      const item = val[0] as Record<string, unknown>;
+    for (const frame of frames) {
       if (
-        item &&
-        typeof item === "object" &&
-        (item.modelId || item.modelName || item.name) &&
-        (item.limit != null || item.quotaInfo != null || item.used != null)
+        Array.isArray(frame) &&
+        frame[0] === "wrb.fr" &&
+        typeof frame[1] === "string" &&
+        typeof frame[2] === "string"
       ) {
-        return val as Record<string, unknown>[];
+        try {
+          results.push({ rpcId: frame[1], payload: JSON.parse(frame[2]) });
+        } catch {
+          // ignore malformed inner JSON
+        }
       }
-    } else if (val && typeof val === "object" && !Array.isArray(val)) {
-      const nested = extractModelArray(val as Record<string, unknown>);
-      if (nested) return nested;
     }
   }
-  return null;
+
+  return results;
+}
+
+// jSf9Qc payload: [status, [[count, remainingFraction, modelType, [[resetSec, resetNano]]], ...], bool]
+// modelType 1 = Flash, 2 = Pro
+const GEMINI_MODEL_NAMES: Record<number, string> = {
+  1: "gemini-flash",
+  2: "gemini-pro",
+};
+
+export function parseJSf9Qc(payload: unknown, now: Date): QuotaSnapshot | null {
+  if (!Array.isArray(payload) || payload.length < 2) return null;
+
+  const buckets = payload[1];
+  if (!Array.isArray(buckets) || buckets.length === 0) return null;
+
+  const subModels: SubModelBucket[] = [];
+
+  for (const bucket of buckets) {
+    if (!Array.isArray(bucket) || bucket.length < 3) continue;
+    const [count, remainingFraction, modelType] = bucket;
+    if (
+      typeof count !== "number" ||
+      typeof remainingFraction !== "number" ||
+      typeof modelType !== "number"
+    )
+      continue;
+
+    const name = GEMINI_MODEL_NAMES[modelType] ?? `gemini-model-${modelType}`;
+    const used = Math.round(count * (1 - remainingFraction));
+    const pct = (1 - remainingFraction) * 100;
+
+    let resetsAt: string | undefined;
+    const timestamps = bucket[3];
+    if (
+      Array.isArray(timestamps) &&
+      Array.isArray(timestamps[0]) &&
+      typeof timestamps[0][0] === "number"
+    ) {
+      resetsAt = new Date(timestamps[0][0] * 1000).toISOString();
+    }
+
+    subModels.push({ name, used, limit: count, pct, resetsAt });
+  }
+
+  if (subModels.length === 0) return null;
+
+  return {
+    source: "gemini-web",
+    collectedAt: now.toISOString(),
+    subModels,
+  };
 }
 
 export async function collectGeminiWeb(opts: {
@@ -168,30 +198,42 @@ export async function collectGeminiWeb(opts: {
   try {
     // storageState is typed `any` so it satisfies the overloaded newContext signature
     const context = await browser.newContext({ storageState });
-    const captured: CapturedResponse[] = [];
+    const batchCaptured: BatchCapture[] = [];
     const page = await context.newPage();
 
     page.on("response", async (res) => {
       const url = res.url();
       const ct = res.headers()["content-type"] ?? "";
-      if (
-        url.includes("gemini.google.com") &&
-        ct.includes("application/json")
-      ) {
-        try {
-          const body = await res.json();
-          captured.push({ url, body });
-          console.error(`[gemini-web] captured: ${url}`);
-        } catch {
-          // ignore parse failures
+      if (!url.includes("gemini.google.com")) return;
+      if (!ct.includes("application/json") && !ct.includes("text/javascript"))
+        return;
+
+      try {
+        const text = await res.text();
+        if (text.startsWith(")]}'")) {
+          for (const item of parseBatchExecute(text)) {
+            console.error(`[gemini-web] batchexecute rpcId=${item.rpcId}`);
+            batchCaptured.push({ url, ...item });
+          }
         }
+      } catch {
+        // ignore read / parse failures
       }
     });
 
-    await page.goto(USAGE_URL, {
-      timeout: opts.timeoutMs,
-      waitUntil: "networkidle",
-    });
+    // "networkidle" never fires because Gemini keeps long-polling connections.
+    // Use "load", then wait for batchexecute XHR calls + async handlers.
+    try {
+      await page.goto(USAGE_URL, {
+        timeout: opts.timeoutMs,
+        waitUntil: "load",
+      });
+    } catch (gotoErr) {
+      const msg = (gotoErr as Error).message;
+      if (!msg.includes("Timeout") && !msg.includes("timeout")) throw gotoErr;
+      console.error("[gemini-web] load timeout — checking captured responses");
+    }
+    await page.waitForTimeout(5000);
 
     const currentUrl = page.url();
     if (
@@ -205,18 +247,22 @@ export async function collectGeminiWeb(opts: {
       };
     }
 
-    // Try XHR-based parse first
-    const xhrResult = tryParseXhrBodies(captured, now);
-    if (xhrResult) {
-      try {
-        const updated = await context.storageState();
-        const dir = join(opts.homeDir, ".config", "quotacheck-mcp");
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(sessionPath, JSON.stringify(updated, null, 2));
-      } catch {
-        // ignore state refresh failures
+    // Try jSf9Qc batchexecute quota data
+    for (const { rpcId, payload } of batchCaptured) {
+      if (rpcId === "jSf9Qc") {
+        const result = parseJSf9Qc(payload, now);
+        if (result) {
+          try {
+            const updated = await context.storageState();
+            const dir = join(opts.homeDir, ".config", "quotacheck-mcp");
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(sessionPath, JSON.stringify(updated, null, 2));
+          } catch {
+            // ignore state refresh failures
+          }
+          return result;
+        }
       }
-      return xhrResult;
     }
 
     // Fall back to HTML content parse
@@ -224,11 +270,12 @@ export async function collectGeminiWeb(opts: {
     const htmlResult = parseGeminiWeb(html, now);
     if (!htmlResult.error) return htmlResult;
 
-    // Neither approach worked — return captured URLs for debugging
+    // Neither approach worked — return captured rpcIds for debugging
+    const capturedIds = batchCaptured.map((c) => c.rpcId);
     return {
       source: "gemini-web",
       collectedAt: now.toISOString(),
-      error: `Could not extract quota. Intercepted: ${JSON.stringify(captured.map((r) => r.url))}`,
+      error: `Could not extract quota. batchexecute rpcIds: ${JSON.stringify(capturedIds)}`,
     };
   } catch (e) {
     return {
