@@ -1,14 +1,11 @@
 import { execFile } from "node:child_process";
 import { request } from "node:https";
-import { promisify } from "node:util";
 import type {
   Collector,
   CollectorContext,
   QuotaSnapshot,
   SubModelBucket,
 } from "../types.js";
-
-const execFileAsync = promisify(execFile);
 
 const KEYCHAIN_SERVICE = "Claude Code-credentials";
 const USAGE_API_HOST = "api.anthropic.com";
@@ -51,14 +48,18 @@ async function readOauthAccessToken(): Promise<string> {
           const parsed = JSON.parse(stdout.trim());
           const token = parsed?.claudeAiOauth?.accessToken;
           if (typeof token !== "string" || token.length === 0) {
-            reject(new Error("claudeAiOauth.accessToken not found in keychain entry"));
+            reject(
+              new Error(
+                "claudeAiOauth.accessToken not found in keychain entry",
+              ),
+            );
           } else {
             resolve(token);
           }
         } catch (e) {
           reject(e);
         }
-      }
+      },
     );
   });
 }

@@ -1,7 +1,10 @@
-import { launchWithLockWorkaround } from "../utils/playwright.js";
+import { chromium } from "playwright";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { Collector, CollectorContext, QuotaSnapshot } from "../types.js";
 
 const USAGE_URL = "https://claude.ai/settings/usage";
+const SESSION_FILE = "claude-design-session.json";
 
 export interface CapturedResponse {
   url: string;
@@ -48,23 +51,49 @@ export function parseDesignApiResponse(
 }
 
 export async function collectClaudeDesign(opts: {
-  chromeProfilePath: string;
+  homeDir: string;
   chromeExecutablePath?: string;
   timeoutMs: number;
   now?: Date;
 }): Promise<QuotaSnapshot> {
   const now = opts.now ?? new Date();
-  let cleanup: (() => Promise<void> | void) | null = null;
-  try {
-    const result = await launchWithLockWorkaround(opts.chromeProfilePath, {
-      executablePath: opts.chromeExecutablePath,
-      timeout: opts.timeoutMs,
-    });
-    const ctx = result.context;
-    cleanup = result.cleanup;
+  const sessionPath = join(
+    opts.homeDir,
+    ".config",
+    "quotacheck-mcp",
+    SESSION_FILE,
+  );
 
+  if (!existsSync(sessionPath)) {
+    return {
+      source: "claude-design",
+      collectedAt: now.toISOString(),
+      error: `No session found. Run: npx quotacheck-mcp login claude-design`,
+    };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let storageState: any;
+  try {
+    storageState = JSON.parse(readFileSync(sessionPath, "utf8"));
+  } catch (e) {
+    return {
+      source: "claude-design",
+      collectedAt: now.toISOString(),
+      error: `Failed to read session file: ${(e as Error).message}`,
+    };
+  }
+
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: opts.chromeExecutablePath,
+  });
+
+  try {
+    // storageState is typed `any` so it satisfies the overloaded newContext signature
+    const context = await browser.newContext({ storageState });
     const captured: CapturedResponse[] = [];
-    const page = await ctx.newPage();
+    const page = await context.newPage();
 
     page.on("response", async (res) => {
       const url = res.url();
@@ -85,15 +114,27 @@ export async function collectClaudeDesign(opts: {
       waitUntil: "networkidle",
     });
 
+    const currentUrl = page.url();
+    if (currentUrl.includes("/login") || currentUrl.includes("login?from=")) {
+      return {
+        source: "claude-design",
+        collectedAt: now.toISOString(),
+        error: `Session expired. Run: npx quotacheck-mcp login claude-design`,
+      };
+    }
+
+    try {
+      const updated = await context.storageState();
+      const dir = join(opts.homeDir, ".config", "quotacheck-mcp");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(sessionPath, JSON.stringify(updated, null, 2));
+    } catch {
+      // ignore state refresh failures
+    }
+
     return parseDesignApiResponse(captured, now);
-  } catch (e) {
-    return {
-      source: "claude-design",
-      collectedAt: now.toISOString(),
-      error: (e as Error).message,
-    };
   } finally {
-    if (cleanup) await cleanup();
+    await browser.close();
   }
 }
 
@@ -101,7 +142,7 @@ export const claudeDesignCollector: Collector = {
   source: "claude-design",
   collect: (ctx: CollectorContext) =>
     collectClaudeDesign({
-      chromeProfilePath: ctx.chromeProfilePath,
+      homeDir: ctx.homeDir,
       chromeExecutablePath: ctx.chromeExecutablePath,
       timeoutMs: ctx.playwrightTimeoutMs,
     }),
