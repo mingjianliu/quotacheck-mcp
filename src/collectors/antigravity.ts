@@ -1,116 +1,173 @@
-import { spawn } from "node:child_process";
+import { exec } from "node:child_process";
+import * as https from "node:https";
 import type {
   Collector,
-  CollectorContext,
   QuotaSnapshot,
   SubModelBucket,
 } from "../types.js";
 
-interface RawBucket {
-  used: number;
-  limit: number;
-  resets_at?: string;
-}
-interface RawModel {
-  name: string;
-  session?: RawBucket;
-  weekly?: RawBucket;
-}
-interface RawOutput {
-  models: RawModel[];
-}
+const GRPC_PATH = "/exa.language_server_pb.LanguageServerService/GetUserStatus";
 
-function bucketFrom(
-  b: RawBucket | undefined,
-  name: string,
-): SubModelBucket | null {
-  if (!b) return null;
-  return {
-    name,
-    used: b.used,
-    limit: b.limit,
-    pct: b.limit > 0 ? (b.used / b.limit) * 100 : 0,
-    resetsAt: b.resets_at,
-  };
-}
-
-export function parseAntigravity(json: string, now: Date): QuotaSnapshot {
-  let raw: RawOutput;
-  try {
-    raw = JSON.parse(json);
-  } catch (e) {
-    throw new Error(
-      `failed to parse antigravity-usage output: ${(e as Error).message}`,
-    );
-  }
-
-  const subModels: SubModelBucket[] = [];
-  for (const m of raw.models ?? []) {
-    const wk = bucketFrom(m.weekly, m.name);
-    if (wk) subModels.push(wk);
-  }
-
-  return {
-    source: "antigravity",
-    collectedAt: now.toISOString(),
-    subModels: subModels.length ? subModels : undefined,
-  };
-}
-
-interface AntigravityOpts {
-  binary: string;
-  args?: string[];
-  now?: Date;
-  timeoutMs?: number;
-}
-
-export async function collectAntigravity(
-  opts: AntigravityOpts,
-): Promise<QuotaSnapshot> {
-  const now = opts.now ?? new Date();
-  const args = opts.args ?? ["--json"];
-
-  let stdout = "";
-  let stderr = "";
-  const exit = await new Promise<number | NodeJS.Signals>((resolve) => {
-    const child = spawn(opts.binary, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const t = setTimeout(() => child.kill("SIGKILL"), opts.timeoutMs ?? 5000);
-    child.stdout.on("data", (d) => {
-      stdout += d.toString();
-    });
-    child.stderr.on("data", (d) => {
-      stderr += d.toString();
-    });
-    child.on("error", () => resolve(127));
-    child.on("exit", (code, sig) => {
-      clearTimeout(t);
-      resolve(code ?? sig ?? 0);
+function runCommand(cmd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec(cmd, { maxBuffer: 1024 * 1024 * 4 }, (err, stdout, stderr) => {
+      err ? reject(new Error(stderr || err.message)) : resolve(stdout);
     });
   });
+}
 
-  if (exit !== 0) {
-    return {
-      source: "antigravity",
-      collectedAt: now.toISOString(),
-      error: `antigravity-usage exited ${exit}: ${stderr.trim() || "no output"}`,
-    };
+async function detectServerInfo(): Promise<{ ports: number[]; csrfToken: string } | null> {
+  let psOut: string;
+  try {
+    psOut = await runCommand("ps aux");
+  } catch {
+    return null;
   }
 
+  let pid: string | null = null;
+  let csrfToken: string | null = null;
+
+  for (const line of psOut.split("\n")) {
+    if (!line.includes("language_server")) continue;
+    const csrfMatch = line.match(/--csrf_token[=\s]+([A-Za-z0-9._/=+-]+)/);
+    if (!csrfMatch) continue;
+
+    const parts = line.trim().split(/\s+/);
+    pid = parts[1];
+    csrfToken = csrfMatch[1];
+    break;
+  }
+
+  if (!pid || !csrfToken) return null;
+
+  const ports: number[] = [];
   try {
-    return parseAntigravity(stdout, now);
-  } catch (e) {
+    const isMac = process.platform === "darwin";
+    if (isMac) {
+      const out = await runCommand(`lsof -iTCP -sTCP:LISTEN -a -p ${pid} -n -P`);
+      const portRegex = /(?:localhost|127\.0\.0\.1|::1|\*):(\d+)/gi;
+      let m: RegExpExecArray | null;
+      while ((m = portRegex.exec(out)) !== null) {
+        ports.push(parseInt(m[1], 10));
+      }
+    } else {
+      const out = await runCommand(`ss -tlnp | grep "pid=${pid}"`);
+      const portRegex = /127\.0\.0\.1:(\d+)/g;
+      let m: RegExpExecArray | null;
+      while ((m = portRegex.exec(out)) !== null) {
+        ports.push(parseInt(m[1], 10));
+      }
+    }
+  } catch {
+    // Port discovery failed
+  }
+
+  return { ports, csrfToken };
+}
+
+function callGetUserStatus(port: number, csrfToken: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const body = "{}";
+    const options: https.RequestOptions = {
+      hostname: "127.0.0.1",
+      port,
+      path: GRPC_PATH,
+      method: "POST",
+      rejectUnauthorized: false,
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+        "x-codeium-csrf-token": csrfToken,
+      },
+      timeout: 6000,
+    };
+
+    const req = https.request(options, (res) => {
+      let raw = "";
+      res.on("data", (chunk) => (raw += chunk));
+      res.on("end", () => {
+        if (res.statusCode !== 200) {
+          reject(new Error(`HTTP ${res.statusCode}: ${raw.slice(0, 80)}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(raw));
+        } catch (e: any) {
+          reject(new Error(`Parse error: ${e.message}`));
+        }
+      });
+    });
+    req.on("error", (err) => reject(new Error(err.message)));
+    req.on("timeout", () => {
+      req.destroy();
+      reject(new Error("Timed out"));
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
+export async function collectAntigravity(): Promise<QuotaSnapshot> {
+  const now = new Date();
+
+  try {
+    const info = await detectServerInfo();
+    if (!info || info.ports.length === 0) {
+      throw new Error("Antigravity language server not found or ports unavailable.");
+    }
+
+    let json: any = null;
+    let lastError: Error | null = null;
+    for (const port of info.ports) {
+      try {
+        json = await callGetUserStatus(port, info.csrfToken);
+        if (json) break;
+      } catch (e) {
+        lastError = e as Error;
+      }
+    }
+
+    if (!json) {
+      throw lastError || new Error("Failed to contact language server on any port.");
+    }
+
+    const configs: any[] = json?.userStatus?.cascadeModelConfigData?.clientModelConfigs ?? [];
+    const subModels: SubModelBucket[] = [];
+    const seen = new Set<string>();
+
+    for (const c of configs) {
+      const label = c.label ?? c.name ?? "Unknown";
+      if (seen.has(label)) continue;
+      seen.add(label);
+
+      const qi = c.quotaInfo ?? {};
+      const remaining: number = qi.remainingFraction ?? 1;
+      const pct = Math.round((1 - remaining) * 100);
+
+      subModels.push({
+        name: label,
+        used: pct,
+        limit: 100,
+        pct,
+        resetsAt: qi.resetTime,
+      });
+    }
+
     return {
       source: "antigravity",
       collectedAt: now.toISOString(),
-      error: (e as Error).message,
+      subModels,
+    };
+  } catch (e: any) {
+    return {
+      source: "antigravity",
+      collectedAt: now.toISOString(),
+      error: e.message,
     };
   }
 }
 
 export const antigravityCollector: Collector = {
   source: "antigravity",
-  collect: (ctx: CollectorContext) =>
-    collectAntigravity({ binary: ctx.antigravityUsageBinary }),
+  collect: () => collectAntigravity(),
 };

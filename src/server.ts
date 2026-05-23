@@ -92,6 +92,7 @@ async function main() {
     const args = ToolInput.parse(req.params.arguments ?? {});
     const snapshots = await runCollectors(enabled, ctx, {
       sources: args.sources,
+      forceRefresh: name === "refresh",
     });
     return {
       content: [{ type: "text", text: JSON.stringify(snapshots, null, 2) }],

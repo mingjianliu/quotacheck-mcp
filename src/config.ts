@@ -61,7 +61,7 @@ export function loadConfig(opts: { homeDir?: string } = {}): Config {
     chromeExecutablePath: defaultChromeExecutable(),
     enabledSources: [...ALL_SOURCES] as SourceId[],
     playwrightTimeoutMs: 8000,
-    antigravityUsageBinary: "antigravity-usage",
+    antigravityUsageBinary: "agy",
   };
 
   const path = join(home, ".config", "quotacheck-mcp", "config.json");

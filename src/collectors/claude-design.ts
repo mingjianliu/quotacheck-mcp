@@ -1,4 +1,4 @@
-import { chromium, type BrowserContext } from "playwright";
+import { launchWithLockWorkaround } from "../utils/playwright.js";
 import type { Collector, CollectorContext, QuotaSnapshot } from "../types.js";
 
 const USAGE_URL = "https://claude.ai/settings/usage";
@@ -39,13 +39,15 @@ export async function collectClaudeDesign(opts: {
   now?: Date;
 }): Promise<QuotaSnapshot> {
   const now = opts.now ?? new Date();
-  let ctx: BrowserContext | null = null;
+  let cleanup: (() => Promise<void> | void) | null = null;
   try {
-    ctx = await chromium.launchPersistentContext(opts.chromeProfilePath, {
-      headless: true,
+    const result = await launchWithLockWorkaround(opts.chromeProfilePath, {
       executablePath: opts.chromeExecutablePath,
       timeout: opts.timeoutMs,
     });
+    const ctx = result.context;
+    cleanup = result.cleanup;
+
     const page = await ctx.newPage();
     await page.goto(USAGE_URL, {
       timeout: opts.timeoutMs,
@@ -60,7 +62,7 @@ export async function collectClaudeDesign(opts: {
       error: (e as Error).message,
     };
   } finally {
-    if (ctx) await ctx.close();
+    if (cleanup) await cleanup();
   }
 }
 
