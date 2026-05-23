@@ -1,6 +1,6 @@
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
-import plans from "../plans.json" with { type: "json" };
+import { execFile } from "node:child_process";
+import { request } from "node:https";
+import { promisify } from "node:util";
 import type {
   Collector,
   CollectorContext,
@@ -8,146 +8,171 @@ import type {
   SubModelBucket,
 } from "../types.js";
 
-interface ClaudeCodeOpts {
-  homeDir: string;
-  projectsDir?: string;
-  plan?: keyof typeof plans.anthropic;
-  now?: Date;
+const execFileAsync = promisify(execFile);
+
+const KEYCHAIN_SERVICE = "Claude Code-credentials";
+const USAGE_API_HOST = "api.anthropic.com";
+const USAGE_API_PATH = "/api/oauth/usage";
+const USAGE_API_USER_AGENT = "claude-code/2.1";
+const USAGE_API_TIMEOUT_MS = 15_000;
+
+interface UsageBucket {
+  utilization: number;
+  resets_at: string;
 }
 
-function walkJsonl(dir: string): string[] {
-  const out: string[] = [];
-  if (!existsSync(dir)) return out;
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    const s = statSync(full);
-    if (s.isDirectory()) {
-      out.push(...walkJsonl(full));
-    } else if (entry.endsWith(".jsonl")) {
-      out.push(full);
-    }
+interface UsageApiResponse {
+  five_hour?: UsageBucket | null;
+  seven_day?: UsageBucket | null;
+  seven_day_opus?: UsageBucket | null;
+  seven_day_sonnet?: UsageBucket | null;
+  seven_day_omelette?: UsageBucket | null;
+  seven_day_cowork?: UsageBucket | null;
+  seven_day_oauth_apps?: UsageBucket | null;
+  extra_usage?: {
+    is_enabled: boolean;
+    monthly_limit: number;
+    used_credits: number;
+    utilization: number;
+    currency: string;
+    disabled_reason?: string | null;
+  } | null;
+}
+
+async function readOauthAccessToken(): Promise<string> {
+  const { stdout } = await execFileAsync(
+    "security",
+    ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+    { timeout: 3000 },
+  );
+  const parsed = JSON.parse(stdout.trim());
+  const token = parsed?.claudeAiOauth?.accessToken;
+  if (typeof token !== "string" || token.length === 0) {
+    throw new Error("claudeAiOauth.accessToken not found in keychain entry");
   }
-  return out;
+  return token;
 }
 
-interface UsageLine {
-  type?: string;
-  timestamp?: string;
-  message?: {
-    model?: string;
-    usage?: {
-      input_tokens?: number;
-      output_tokens?: number;
-      cache_read_input_tokens?: number;
-      cache_creation_input_tokens?: number;
-    };
+function fetchUsage(accessToken: string): Promise<UsageApiResponse> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        hostname: USAGE_API_HOST,
+        path: USAGE_API_PATH,
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "anthropic-beta": "oauth-2025-04-20",
+          "User-Agent": USAGE_API_USER_AGENT,
+        },
+        timeout: USAGE_API_TIMEOUT_MS,
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          if (res.statusCode !== 200) {
+            reject(
+              new Error(
+                `usage API returned HTTP ${res.statusCode}: ${data.slice(0, 200)}`,
+              ),
+            );
+            return;
+          }
+          try {
+            resolve(JSON.parse(data) as UsageApiResponse);
+          } catch (err) {
+            reject(new Error(`failed to parse usage API response: ${err}`));
+          }
+        });
+      },
+    );
+    req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy();
+      reject(new Error(`usage API timeout after ${USAGE_API_TIMEOUT_MS}ms`));
+    });
+    req.end();
+  });
+}
+
+function toBucket(b: UsageBucket | null | undefined) {
+  if (!b) return undefined;
+  return {
+    used: b.utilization,
+    limit: 100,
+    pct: b.utilization,
+    resetsAt: b.resets_at,
   };
 }
 
-function modelFamily(
-  model: string | undefined,
-): "opus" | "sonnet" | "haiku" | "other" {
-  if (!model) return "other";
-  if (model.includes("opus")) return "opus";
-  if (model.includes("sonnet")) return "sonnet";
-  if (model.includes("haiku")) return "haiku";
-  return "other";
-}
-
 export async function collectClaudeCode(
-  opts: ClaudeCodeOpts,
+  opts: {
+    now?: Date;
+  } = {},
 ): Promise<QuotaSnapshot> {
   const now = opts.now ?? new Date();
-  const projectsDir =
-    opts.projectsDir ?? join(opts.homeDir, ".claude", "projects");
-  const planKey = opts.plan ?? "pro";
-  const plan = plans.anthropic[planKey];
-
-  if (!existsSync(projectsDir)) {
+  let token: string;
+  try {
+    token = await readOauthAccessToken();
+  } catch (err) {
     return {
       source: "claude-code",
       collectedAt: now.toISOString(),
-      error: `claude projects dir not found: ${projectsDir}`,
+      error: `failed to read OAuth token from keychain: ${(err as Error).message}`,
     };
   }
 
-  const sessionCutoff = new Date(
-    now.getTime() - plan.sessionWindowHours * 3600_000,
-  );
-  const weekCutoff = new Date(now.getTime() - 7 * 24 * 3600_000);
-
-  let sessionTotal = 0;
-  let weeklyTotal = 0;
-  const opusSession = { used: 0 };
-  const opusWeekly = { used: 0 };
-
-  for (const file of walkJsonl(projectsDir)) {
-    const lines = readFileSync(file, "utf8").split("\n");
-    for (const line of lines) {
-      if (!line) continue;
-      let obj: UsageLine;
-      try {
-        obj = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const usage = obj.message?.usage;
-      if (!usage) continue;
-      const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
-      const ts = obj.timestamp ? new Date(obj.timestamp) : null;
-      if (!ts) continue;
-      const isOpus = modelFamily(obj.message?.model) === "opus";
-
-      if (ts >= sessionCutoff) {
-        sessionTotal += tokens;
-        if (isOpus) opusSession.used += tokens;
-      }
-      if (ts >= weekCutoff) {
-        weeklyTotal += tokens;
-        if (isOpus) opusWeekly.used += tokens;
-      }
-    }
+  let usage: UsageApiResponse;
+  try {
+    usage = await fetchUsage(token);
+  } catch (err) {
+    return {
+      source: "claude-code",
+      collectedAt: now.toISOString(),
+      error: (err as Error).message,
+    };
   }
 
-  const weeklyResetAt = new Date(
-    weekCutoff.getTime() + 7 * 24 * 3600_000,
-  ).toISOString();
-  const sessionResetAt = new Date(
-    sessionCutoff.getTime() + plan.sessionWindowHours * 3600_000,
-  ).toISOString();
-
   const subModels: SubModelBucket[] = [];
-  if (plan.weeklyOpusTokens > 0 || opusWeekly.used > 0) {
+  const subKeys: Array<
+    ["opus" | "sonnet" | "omelette", keyof UsageApiResponse]
+  > = [
+    ["opus", "seven_day_opus"],
+    ["sonnet", "seven_day_sonnet"],
+    ["omelette", "seven_day_omelette"],
+  ];
+  for (const [name, key] of subKeys) {
+    const b = usage[key] as UsageBucket | null | undefined;
+    if (!b) continue;
     subModels.push({
-      name: "opus",
-      used: opusWeekly.used,
-      limit: plan.weeklyOpusTokens,
-      pct: plan.weeklyOpusTokens > 0 ? (opusWeekly.used / plan.weeklyOpusTokens) * 100 : 0,
-      resetsAt: weeklyResetAt,
+      name,
+      used: b.utilization,
+      limit: 100,
+      pct: b.utilization,
+      resetsAt: b.resets_at,
+    });
+  }
+
+  if (usage.extra_usage?.is_enabled) {
+    subModels.push({
+      name: `extra_usage_${usage.extra_usage.currency}`,
+      used: usage.extra_usage.used_credits,
+      limit: usage.extra_usage.monthly_limit,
+      pct: usage.extra_usage.utilization,
     });
   }
 
   return {
     source: "claude-code",
     collectedAt: now.toISOString(),
-    session: {
-      used: sessionTotal,
-      limit: plan.sessionTokens,
-      pct: (sessionTotal / plan.sessionTokens) * 100,
-      resetsAt: sessionResetAt,
-    },
-    weekly: {
-      used: weeklyTotal,
-      limit: plan.weeklyTokens,
-      pct: (weeklyTotal / plan.weeklyTokens) * 100,
-      resetsAt: weeklyResetAt,
-    },
+    session: toBucket(usage.five_hour),
+    weekly: toBucket(usage.seven_day),
     subModels: subModels.length ? subModels : undefined,
   };
 }
 
 export const claudeCodeCollector: Collector = {
   source: "claude-code",
-  collect: (ctx: CollectorContext) =>
-    collectClaudeCode({ homeDir: ctx.homeDir }),
+  collect: (_ctx: CollectorContext) => collectClaudeCode(),
 };
