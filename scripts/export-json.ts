@@ -6,14 +6,12 @@ import { claudeCodeCollector } from "../src/collectors/claude-code.js";
 import { geminiCliCollector } from "../src/collectors/gemini-cli.js";
 import { antigravityCollector } from "../src/collectors/antigravity.js";
 import { geminiWebCollector } from "../src/collectors/gemini-web.js";
-import { claudeDesignCollector } from "../src/collectors/claude-design.js";
 
 const ALL: Collector[] = [
   claudeCodeCollector,
   geminiCliCollector,
   antigravityCollector,
   geminiWebCollector,
-  claudeDesignCollector,
 ];
 
 (async () => {

@@ -2,14 +2,12 @@ export type SourceId =
   | "claude-code"
   | "gemini-cli"
   | "gemini-web"
-  | "claude-design"
   | "antigravity";
 
 export const ALL_SOURCES: SourceId[] = [
   "claude-code",
   "gemini-cli",
   "gemini-web",
-  "claude-design",
   "antigravity",
 ];
 

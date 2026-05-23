@@ -21,7 +21,6 @@ describe("loadConfig", () => {
       "claude-code",
       "gemini-cli",
       "gemini-web",
-      "claude-design",
       "antigravity",
     ]);
     expect(cfg.playwrightTimeoutMs).toBe(8000);

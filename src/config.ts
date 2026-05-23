@@ -8,13 +8,7 @@ const ConfigSchema = z.object({
   chromeProfilePath: z.string(),
   chromeExecutablePath: z.string().optional(),
   enabledSources: z.array(
-    z.enum([
-      "claude-code",
-      "gemini-cli",
-      "gemini-web",
-      "claude-design",
-      "antigravity",
-    ]),
+    z.enum(["claude-code", "gemini-cli", "gemini-web", "antigravity"]),
   ),
   playwrightTimeoutMs: z.number().int().positive(),
   antigravityUsageBinary: z.string(),
@@ -24,25 +18,12 @@ export type Config = z.infer<typeof ConfigSchema>;
 
 function defaultChromeProfile(home: string): string {
   if (platform() === "darwin") {
-    return join(
-      home,
-      "Library",
-      "Application Support",
-      "Google",
-      "Chrome",
-    );
+    return join(home, "Library", "Application Support", "Google", "Chrome");
   }
   if (platform() === "linux") {
     return join(home, ".config", "google-chrome");
   }
-  return join(
-    home,
-    "AppData",
-    "Local",
-    "Google",
-    "Chrome",
-    "User Data",
-  );
+  return join(home, "AppData", "Local", "Google", "Chrome", "User Data");
 }
 
 function defaultChromeExecutable(): string | undefined {
