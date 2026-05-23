@@ -30,11 +30,10 @@ function defaultChromeProfile(home: string): string {
       "Application Support",
       "Google",
       "Chrome",
-      "Default",
     );
   }
   if (platform() === "linux") {
-    return join(home, ".config", "google-chrome", "Default");
+    return join(home, ".config", "google-chrome");
   }
   return join(
     home,
@@ -43,7 +42,6 @@ function defaultChromeProfile(home: string): string {
     "Google",
     "Chrome",
     "User Data",
-    "Default",
   );
 }
 

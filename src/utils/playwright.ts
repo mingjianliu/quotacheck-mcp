@@ -16,12 +16,13 @@ export async function launchWithLockWorkaround(
       headless: true,
       executablePath: options.executablePath,
       timeout: options.timeout,
+      ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
     });
     return { context, cleanup: () => context.close() };
   } catch (e) {
     const errorMsg = (e as Error).message;
-    if (errorMsg.includes("Failed to create a ProcessSingleton") || errorMsg.includes("SingletonLock")) {
-      console.log(`Chrome profile locked, attempting workaround for ${profilePath}...`);
+    if (e.name === "TimeoutError" || errorMsg.includes("Timeout") || errorMsg.includes("Failed to create a ProcessSingleton") || errorMsg.includes("SingletonLock")) {
+      console.log(`Chrome profile locked or timed out, attempting workaround for ${profilePath}...`);
       
       // Workaround: Copy essential parts of the profile to a temporary directory
       const tmpProfile = mkdtempSync(join(tmpdir(), "quotacheck-profile-"));
@@ -51,6 +52,7 @@ export async function launchWithLockWorkaround(
         headless: true,
         executablePath: options.executablePath,
         timeout: options.timeout,
+        ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
       });
 
       return {
