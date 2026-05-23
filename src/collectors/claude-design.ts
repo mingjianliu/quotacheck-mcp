@@ -3,32 +3,47 @@ import type { Collector, CollectorContext, QuotaSnapshot } from "../types.js";
 
 const USAGE_URL = "https://claude.ai/settings/usage";
 
-export function parseClaudeDesign(html: string, now: Date): QuotaSnapshot {
-  const usedRe = /design[^<]*?(\d[\d,]*)\s*\/\s*(\d[\d,]*)/i;
-  const resetRe = /resets?[^<]*?(\d{4}-\d{2}-\d{2}T[\d:]+Z)/i;
+export interface CapturedResponse {
+  url: string;
+  body: unknown;
+}
 
-  const usedMatch = usedRe.exec(html);
-  if (!usedMatch) {
-    return {
-      source: "claude-design",
-      collectedAt: now.toISOString(),
-      error: "design quota row not found on page",
-    };
+export function parseDesignApiResponse(
+  responses: CapturedResponse[],
+  now: Date,
+): QuotaSnapshot {
+  const interceptedUrls = responses.map((r) => r.url);
+
+  for (const { body } of responses) {
+    if (!body || typeof body !== "object") continue;
+    const b = body as Record<string, unknown>;
+
+    if (b.design && typeof b.design === "object") {
+      const d = b.design as Record<string, unknown>;
+      if (typeof d.used === "number" && typeof d.limit === "number") {
+        return {
+          source: "claude-design",
+          collectedAt: now.toISOString(),
+          session: {
+            used: d.used,
+            limit: d.limit,
+            pct: d.limit > 0 ? (d.used / d.limit) * 100 : 0,
+            resetsAt: typeof d.resets_at === "string" ? d.resets_at : undefined,
+          },
+        };
+      }
+      return {
+        source: "claude-design",
+        collectedAt: now.toISOString(),
+        error: `design API response missing expected fields; body: ${JSON.stringify(body).slice(0, 300)}`,
+      };
+    }
   }
-
-  const used = Number(usedMatch[1].replace(/,/g, ""));
-  const limit = Number(usedMatch[2].replace(/,/g, ""));
-  const resetsAt = resetRe.exec(html)?.[1];
 
   return {
     source: "claude-design",
     collectedAt: now.toISOString(),
-    session: {
-      used,
-      limit,
-      pct: limit > 0 ? (used / limit) * 100 : 0,
-      resetsAt,
-    },
+    error: `no design quota API response captured; intercepted: ${JSON.stringify(interceptedUrls)}`,
   };
 }
 
@@ -48,13 +63,29 @@ export async function collectClaudeDesign(opts: {
     const ctx = result.context;
     cleanup = result.cleanup;
 
+    const captured: CapturedResponse[] = [];
     const page = await ctx.newPage();
+
+    page.on("response", async (res) => {
+      const url = res.url();
+      const ct = res.headers()["content-type"] ?? "";
+      if (url.includes("claude.ai/api/") && ct.includes("application/json")) {
+        try {
+          const body = await res.json();
+          captured.push({ url, body });
+          console.error(`[claude-design] captured: ${url}`);
+        } catch {
+          // ignore parse failures
+        }
+      }
+    });
+
     await page.goto(USAGE_URL, {
       timeout: opts.timeoutMs,
       waitUntil: "networkidle",
     });
-    const html = await page.content();
-    return parseClaudeDesign(html, now);
+
+    return parseDesignApiResponse(captured, now);
   } catch (e) {
     return {
       source: "claude-design",
