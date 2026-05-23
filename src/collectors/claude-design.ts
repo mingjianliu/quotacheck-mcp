@@ -81,15 +81,6 @@ export function parseDesignApiResponse(
           resetsAt: typeof resets_at === "string" ? resets_at : undefined,
         });
       }
-      const extra = b.extra_usage as Record<string, unknown> | null | undefined;
-      if (extra?.is_enabled && typeof extra.used_credits === "number") {
-        subModels.push({
-          name: `extra_usage_${extra.currency ?? "USD"}`,
-          used: extra.used_credits as number,
-          limit: (extra.monthly_limit as number) ?? 0,
-          pct: (extra.utilization as number) ?? 0,
-        });
-      }
       return {
         source: "claude-design",
         collectedAt: now.toISOString(),
