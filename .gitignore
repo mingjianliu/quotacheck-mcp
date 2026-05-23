@@ -7,3 +7,4 @@ dist/
 .antigravitycli/
 .gemini/
 .claude/
+macos/*.app

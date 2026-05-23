@@ -61,3 +61,14 @@ npm test         # unit tests
 npm run smoke    # live end-to-end against your real sources
 npm run dev      # run server via tsx (stdio)
 ```
+
+## macOS Menu Bar App
+
+This repository includes a native SwiftUI Menu Bar app that lets you view your quotas outside the terminal. It fetches data in the background every 5 minutes.
+
+To build and run the app (no Xcode required):
+```bash
+cd macos
+./build.sh
+open Quotacheck.app
+```
