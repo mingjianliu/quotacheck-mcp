@@ -80,7 +80,7 @@ describe("parseJSf9Qc", () => {
   });
 
   it("parses Flash and Pro quota buckets", () => {
-    // modelType 1 = flash (exhausted), modelType 2 = pro (36% remaining = 64% used)
+    // field[1] is the consumed fraction: 0.0 = nothing used, 0.36 = 36% used
     const payload = [
       2,
       [
@@ -96,13 +96,13 @@ describe("parseJSf9Qc", () => {
 
     const flash = snap!.subModels!.find((m) => m.name === "gemini-flash")!;
     expect(flash.limit).toBe(2400);
-    expect(flash.used).toBe(2400);
-    expect(flash.pct).toBeCloseTo(100, 0);
+    expect(flash.used).toBe(0);
+    expect(flash.pct).toBeCloseTo(0, 0);
     expect(flash.resetsAt).toBe(new Date(1779588120 * 1000).toISOString());
 
     const pro = snap!.subModels!.find((m) => m.name === "gemini-pro")!;
     expect(pro.limit).toBe(30943);
-    expect(pro.pct).toBeCloseTo(64, 0);
+    expect(pro.pct).toBeCloseTo(36, 0);
     expect(pro.resetsAt).toBe(new Date(1779778920 * 1000).toISOString());
   });
 });

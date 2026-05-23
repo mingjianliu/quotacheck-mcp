@@ -107,8 +107,11 @@ export function parseJSf9Qc(payload: unknown, now: Date): QuotaSnapshot | null {
       continue;
 
     const name = GEMINI_MODEL_NAMES[modelType] ?? `gemini-model-${modelType}`;
-    const used = Math.round(count * (1 - remainingFraction));
-    const pct = (1 - remainingFraction) * 100;
+    // field[1] is the consumed fraction (0 = none used, 1 = fully used),
+    // despite the variable name I originally chose — confirmed against the web UI.
+    const usedFraction = remainingFraction;
+    const used = Math.round(count * usedFraction);
+    const pct = usedFraction * 100;
 
     let resetsAt: string | undefined;
     const timestamps = bucket[3];
