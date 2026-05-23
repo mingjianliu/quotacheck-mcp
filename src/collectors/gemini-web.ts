@@ -51,52 +51,30 @@ interface BatchCapture {
 }
 
 // Gemini batchexecute responses start with )]}'\n (XSSI prefix), then
-// size-prefixed JSON chunks. Each chunk is an array of frames; frames with
-// structure ["wrb.fr", rpcId, escapedPayload, ...] carry the real data.
+// size-prefixed chunks. The "size" counts bytes across multiple frames, so
+// byte-slicing mis-aligns for non-trivial responses. Instead we scan for
+// wrb.fr frames directly with a regex — robust to any chunk layout.
 export function parseBatchExecute(
   text: string,
 ): Array<{ rpcId: string; payload: unknown }> {
   if (!text.startsWith(")]}'")) return [];
 
-  // Strip )]}'\ n
-  let rest = text.slice(text.indexOf("\n") + 1).trimStart();
+  // Match: ["wrb.fr","<rpcId>","<escaped-payload>", ...]
+  // The payload is a JSON-encoded string, so we capture the escaped content
+  // between the quotes and re-parse it as a string then as JSON.
+  const frameRe = /\["wrb\.fr","([^"]+)","((?:[^"\\]|\\.)*)"/g;
   const results: Array<{ rpcId: string; payload: unknown }> = [];
 
-  while (rest.length > 0) {
-    const nlIdx = rest.indexOf("\n");
-    if (nlIdx === -1) break;
-
-    const sizeStr = rest.slice(0, nlIdx).trim();
-    const size = parseInt(sizeStr, 10);
-    if (isNaN(size) || size <= 0) break;
-
-    rest = rest.slice(nlIdx + 1);
-    if (rest.length < size) break;
-
-    const chunk = rest.slice(0, size);
-    rest = rest.slice(size).trimStart();
-
-    let frames: unknown;
+  let m: RegExpExecArray | null;
+  while ((m = frameRe.exec(text)) !== null) {
+    const rpcId = m[1];
     try {
-      frames = JSON.parse(chunk);
+      // m[2] is the escaped inner content; wrap in quotes to form a valid
+      // JSON string, parse to get the raw payload string, then parse that.
+      const inner = JSON.parse(`"${m[2]}"`);
+      results.push({ rpcId, payload: JSON.parse(inner) });
     } catch {
-      continue;
-    }
-    if (!Array.isArray(frames)) continue;
-
-    for (const frame of frames) {
-      if (
-        Array.isArray(frame) &&
-        frame[0] === "wrb.fr" &&
-        typeof frame[1] === "string" &&
-        typeof frame[2] === "string"
-      ) {
-        try {
-          results.push({ rpcId: frame[1], payload: JSON.parse(frame[2]) });
-        } catch {
-          // ignore malformed inner JSON
-        }
-      }
+      // ignore malformed frames
     }
   }
 
@@ -198,27 +176,33 @@ export async function collectGeminiWeb(opts: {
   try {
     // storageState is typed `any` so it satisfies the overloaded newContext signature
     const context = await browser.newContext({ storageState });
+    // Start reading response bodies immediately in the handler (bodies are
+    // discarded by Playwright shortly after the response fires — reading them
+    // later fails silently). Collect the Promises and await them all after
+    // the page wait so we don't check batchCaptured before reads complete.
     const batchCaptured: BatchCapture[] = [];
+    const readPromises: Promise<void>[] = [];
     const page = await context.newPage();
 
-    page.on("response", async (res) => {
+    page.on("response", (res) => {
       const url = res.url();
       const ct = res.headers()["content-type"] ?? "";
       if (!url.includes("gemini.google.com")) return;
       if (!ct.includes("application/json") && !ct.includes("text/javascript"))
         return;
 
-      try {
-        const text = await res.text();
-        if (text.startsWith(")]}'")) {
-          for (const item of parseBatchExecute(text)) {
-            console.error(`[gemini-web] batchexecute rpcId=${item.rpcId}`);
-            batchCaptured.push({ url, ...item });
-          }
-        }
-      } catch {
-        // ignore read / parse failures
-      }
+      readPromises.push(
+        res
+          .text()
+          .then((text) => {
+            if (!text.startsWith(")]}'")) return;
+            for (const item of parseBatchExecute(text)) {
+              console.error(`[gemini-web] batchexecute rpcId=${item.rpcId}`);
+              batchCaptured.push({ url, ...item });
+            }
+          })
+          .catch(() => {}),
+      );
     });
 
     // "networkidle" never fires because Gemini keeps long-polling connections.
@@ -234,6 +218,7 @@ export async function collectGeminiWeb(opts: {
       console.error("[gemini-web] load timeout — checking captured responses");
     }
     await page.waitForTimeout(5000);
+    await Promise.all(readPromises);
 
     const currentUrl = page.url();
     if (
