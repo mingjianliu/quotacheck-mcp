@@ -161,6 +161,8 @@ export async function collectGeminiWeb(opts: {
   const browser = await chromium.launch({
     headless: true,
     executablePath: opts.chromeExecutablePath,
+    args: ["--disable-blink-features=AutomationControlled"],
+    ignoreDefaultArgs: ["--enable-automation"],
   });
 
   try {

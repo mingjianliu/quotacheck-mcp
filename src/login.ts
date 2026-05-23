@@ -9,9 +9,22 @@
  *   npx tsx src/login.ts gemini-web
  */
 import { chromium } from "playwright";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
+
+function detectChrome(): string | undefined {
+  if (platform() === "darwin") {
+    const p = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    return existsSync(p) ? p : undefined;
+  }
+  if (platform() === "linux") {
+    for (const p of ["/usr/bin/google-chrome", "/usr/bin/chromium-browser"]) {
+      if (existsSync(p)) return p;
+    }
+  }
+  return undefined;
+}
 
 const SOURCES = {
   "claude-design": {
@@ -61,7 +74,22 @@ async function main() {
   console.log(`\nOpening browser for ${source}…`);
   console.log(`${cfg.instructions}\n`);
 
-  const browser = await chromium.launch({ headless: false });
+  const chromePath = detectChrome();
+  if (chromePath) {
+    console.log(`Using Chrome at: ${chromePath}`);
+  } else {
+    console.log(
+      "System Chrome not found — using Playwright's Chromium (may hit bot detection)",
+    );
+  }
+
+  const browser = await chromium.launch({
+    headless: false,
+    executablePath: chromePath,
+    // Suppress automation fingerprints so Cloudflare doesn't block the login
+    args: ["--disable-blink-features=AutomationControlled"],
+    ignoreDefaultArgs: ["--enable-automation"],
+  });
   const context = await browser.newContext();
   const page = await context.newPage();
 
