@@ -1,6 +1,5 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
 import type {
   Collector,
   CollectorContext,
@@ -8,8 +7,8 @@ import type {
   SourceId,
 } from "./types.js";
 
-function getCachePath(_ctx: CollectorContext) {
-  return join(tmpdir(), "quotacheck_mcp_cache.json");
+function getCachePath(ctx: CollectorContext) {
+  return join(ctx.homeDir, ".config", "quotacheck-mcp", "cache.json");
 }
 
 function loadCache(ctx: CollectorContext): Record<string, { snapshot: QuotaSnapshot, ts: number }> {
@@ -27,6 +26,7 @@ function loadCache(ctx: CollectorContext): Record<string, { snapshot: QuotaSnaps
 function saveCache(ctx: CollectorContext, cache: Record<string, { snapshot: QuotaSnapshot, ts: number }>) {
   try {
     const p = getCachePath(ctx);
+    mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, JSON.stringify(cache, null, 2));
   } catch (e) {
     // ignore
