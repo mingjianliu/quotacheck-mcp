@@ -84,8 +84,8 @@ export function parseBatchExecute(
 // jSf9Qc payload: [status, [[count, remainingFraction, modelType, [[resetSec, resetNano]]], ...], bool]
 // modelType 1 = Flash, 2 = Pro
 const GEMINI_MODEL_NAMES: Record<number, string> = {
-  1: "gemini-flash",
-  2: "gemini-pro",
+  1: "session quota",
+  2: "weekly quota",
 };
 
 export function parseJSf9Qc(payload: unknown, now: Date): QuotaSnapshot | null {
