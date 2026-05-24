@@ -5,6 +5,7 @@ struct QuotaUsage: Codable, Hashable {
     let used: Int
     let limit: Int
     let pct: Double
+    let resetsAt: String?
 }
 
 struct SubModelBucket: Codable, Hashable {
@@ -12,6 +13,7 @@ struct SubModelBucket: Codable, Hashable {
     let used: Int
     let limit: Int
     let pct: Double
+    let resetsAt: String?
 }
 
 struct QuotaSnapshot: Codable, Hashable {
@@ -182,7 +184,7 @@ struct SourceView: View {
                 }
                 if let subs = snap.subModels, !subs.isEmpty {
                     ForEach(subs, id: \.name) { sub in
-                        QuotaBar(name: sub.name, used: sub.used, limit: sub.limit, pct: sub.pct)
+                        QuotaBar(name: sub.name, used: sub.used, limit: sub.limit, pct: sub.pct, resetsAt: sub.resetsAt)
                     }
                 }
             }
@@ -209,21 +211,24 @@ struct QuotaBar: View {
     let used: Int
     let limit: Int
     let pct: Double
-    
+    let resetsAt: String?
+
     init(name: String, usage: QuotaUsage) {
         self.name = name
         self.used = usage.used
         self.limit = usage.limit
         self.pct = usage.pct
+        self.resetsAt = usage.resetsAt
     }
-    
-    init(name: String, used: Int, limit: Int, pct: Double) {
+
+    init(name: String, used: Int, limit: Int, pct: Double, resetsAt: String? = nil) {
         self.name = name
         self.used = used
         self.limit = limit
         self.pct = pct
+        self.resetsAt = resetsAt
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
@@ -237,7 +242,33 @@ struct QuotaBar: View {
             ProgressView(value: min(pct, 100), total: 100)
                 .progressViewStyle(.linear)
                 .tint(pct > 90 ? .red : (pct > 75 ? .orange : .accentColor))
+            if let resetsAt = resetsAt, let resetDate = parseISO(resetsAt) {
+                Text("Resets \(formatReset(resetDate))")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
         }
+    }
+
+    func parseISO(_ s: String) -> Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+    }
+
+    func formatReset(_ date: Date) -> String {
+        let now = Date()
+        let diff = date.timeIntervalSince(now)
+        if diff <= 0 { return "now" }
+        let h = Int(diff) / 3600
+        let m = (Int(diff) % 3600) / 60
+        if h >= 24 {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "MMM d 'at' h:mm a"
+            return fmt.string(from: date)
+        }
+        if h > 0 { return "in \(h)h \(m)m" }
+        return "in \(m)m"
     }
 }
 
