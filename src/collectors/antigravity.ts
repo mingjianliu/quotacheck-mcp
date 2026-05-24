@@ -1,10 +1,6 @@
 import { exec } from "node:child_process";
 import * as https from "node:https";
-import type {
-  Collector,
-  QuotaSnapshot,
-  SubModelBucket,
-} from "../types.js";
+import type { Collector, QuotaSnapshot, SubModelBucket } from "../types.js";
 
 const GRPC_PATH = "/exa.language_server_pb.LanguageServerService/GetUserStatus";
 
@@ -16,7 +12,10 @@ function runCommand(cmd: string): Promise<string> {
   });
 }
 
-async function detectServerInfo(): Promise<{ ports: number[]; csrfToken: string } | null> {
+async function detectServerInfo(): Promise<{
+  ports: number[];
+  csrfToken: string;
+} | null> {
   let psOut: string;
   try {
     psOut = await runCommand("ps aux");
@@ -44,7 +43,9 @@ async function detectServerInfo(): Promise<{ ports: number[]; csrfToken: string 
   try {
     const isMac = process.platform === "darwin";
     if (isMac) {
-      const out = await runCommand(`lsof -iTCP -sTCP:LISTEN -a -p ${pid} -n -P`);
+      const out = await runCommand(
+        `lsof -iTCP -sTCP:LISTEN -a -p ${pid} -n -P`,
+      );
       const portRegex = /(?:localhost|127\.0\.0\.1|::1|\*):(\d+)/gi;
       let m: RegExpExecArray | null;
       while ((m = portRegex.exec(out)) !== null) {
@@ -113,7 +114,9 @@ export async function collectAntigravity(): Promise<QuotaSnapshot> {
   try {
     const info = await detectServerInfo();
     if (!info || info.ports.length === 0) {
-      throw new Error("Antigravity language server not found or ports unavailable.");
+      throw new Error(
+        "Antigravity language server not found or ports unavailable.",
+      );
     }
 
     let json: any = null;
@@ -128,10 +131,13 @@ export async function collectAntigravity(): Promise<QuotaSnapshot> {
     }
 
     if (!json) {
-      throw lastError || new Error("Failed to contact language server on any port.");
+      throw (
+        lastError || new Error("Failed to contact language server on any port.")
+      );
     }
 
-    const configs: any[] = json?.userStatus?.cascadeModelConfigData?.clientModelConfigs ?? [];
+    const configs: any[] =
+      json?.userStatus?.cascadeModelConfigData?.clientModelConfigs ?? [];
     const subModels: SubModelBucket[] = [];
     const seen = new Set<string>();
 
@@ -141,7 +147,14 @@ export async function collectAntigravity(): Promise<QuotaSnapshot> {
       seen.add(label);
 
       const qi = c.quotaInfo ?? {};
-      const remaining: number = qi.remainingFraction ?? 1;
+      // resetTime present + no remainingFraction = exhausted quota (100% used)
+      // no quotaInfo at all = unlimited/unknown = 0% used
+      const remaining: number =
+        "remainingFraction" in qi
+          ? qi.remainingFraction
+          : "resetTime" in qi
+            ? 0
+            : 1;
       const pct = Math.round((1 - remaining) * 100);
 
       subModels.push({

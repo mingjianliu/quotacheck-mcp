@@ -235,7 +235,7 @@ struct QuotaBar: View {
                 Text(name)
                     .font(.caption)
                 Spacer()
-                Text("\(used) / \(limit)")
+                Text(limit == 100 ? "\(used)%" : "\(used) / \(limit)")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }

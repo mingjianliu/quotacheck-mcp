@@ -123,7 +123,7 @@ export function parseJSf9Qc(payload: unknown, now: Date): QuotaSnapshot | null {
       resetsAt = new Date(timestamps[0][0] * 1000).toISOString();
     }
 
-    subModels.push({ name, used, limit: count, pct, resetsAt });
+    subModels.push({ name, used: Math.round(pct), limit: 100, pct, resetsAt });
   }
 
   if (subModels.length === 0) return null;

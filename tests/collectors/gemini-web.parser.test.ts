@@ -95,13 +95,14 @@ describe("parseJSf9Qc", () => {
     expect(snap!.subModels).toHaveLength(2);
 
     const flash = snap!.subModels!.find((m) => m.name === "session quota")!;
-    expect(flash.limit).toBe(2400);
+    expect(flash.limit).toBe(100);
     expect(flash.used).toBe(0);
     expect(flash.pct).toBeCloseTo(0, 0);
     expect(flash.resetsAt).toBe(new Date(1779588120 * 1000).toISOString());
 
     const pro = snap!.subModels!.find((m) => m.name === "weekly quota")!;
-    expect(pro.limit).toBe(30943);
+    expect(pro.limit).toBe(100);
+    expect(pro.used).toBe(36);
     expect(pro.pct).toBeCloseTo(36, 0);
     expect(pro.resetsAt).toBe(new Date(1779778920 * 1000).toISOString());
   });
