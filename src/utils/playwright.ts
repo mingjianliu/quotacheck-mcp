@@ -1,7 +1,18 @@
-import { chromium, type BrowserContext } from "playwright";
+import { chromium } from "playwright-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import { type BrowserContext } from "playwright";
 import { cpSync, existsSync, mkdirSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+
+chromium.use(StealthPlugin());
+
+function getJitteredViewport() {
+  return {
+    width: 1280 + Math.floor(Math.random() * 10) - 5, // 1275-1285
+    height: 720 + Math.floor(Math.random() * 10) - 5, // 715-725
+  };
+}
 
 export async function launchWithLockWorkaround(
   profilePath: string,
@@ -16,7 +27,10 @@ export async function launchWithLockWorkaround(
       headless: true,
       executablePath: options.executablePath,
       timeout: options.timeout,
-      ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
+      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain", "--enable-automation"],
+      args: ["--disable-blink-features=AutomationControlled"],
+      viewport: getJitteredViewport(),
     });
     return { context, cleanup: () => context.close() };
   } catch (e) {
@@ -26,7 +40,8 @@ export async function launchWithLockWorkaround(
       err.name === "TimeoutError" ||
       errorMsg.includes("Timeout") ||
       errorMsg.includes("Failed to create a ProcessSingleton") ||
-      errorMsg.includes("SingletonLock")
+      errorMsg.includes("SingletonLock") ||
+      errorMsg.includes("Opening in existing browser session")
     ) {
       console.log(
         `Chrome profile locked or timed out, attempting workaround for ${profilePath}...`,
@@ -80,7 +95,10 @@ export async function launchWithLockWorkaround(
         headless: true,
         executablePath: options.executablePath,
         timeout: options.timeout,
-        ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
+        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain", "--enable-automation"],
+        args: ["--disable-blink-features=AutomationControlled"],
+        viewport: getJitteredViewport(),
       });
 
       return {
