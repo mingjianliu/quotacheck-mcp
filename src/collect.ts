@@ -52,7 +52,8 @@ export async function runCollectors(
 
   for (const c of selected) {
     const cached = cache[c.source];
-    if (!opts.forceRefresh && cached && (now - cached.ts < CACHE_TTL)) {
+    const ttl = c.source === "claude-code" ? 60 * 60 * 1000 : CACHE_TTL;
+    if (!opts.forceRefresh && cached && (now - cached.ts < ttl)) {
       cachedResults.push(cached.snapshot);
     } else {
       toRun.push(c);

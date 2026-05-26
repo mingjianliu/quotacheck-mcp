@@ -24,6 +24,7 @@ const ALL: Collector[] = [
     homeDir: homedir(),
   };
   const enabled = ALL.filter((c) => cfg.enabledSources.includes(c.source));
-  const snaps = await runCollectors(enabled, ctx);
+  const forceRefresh = process.argv.includes("--force") || process.argv.includes("-f");
+  const snaps = await runCollectors(enabled, ctx, { forceRefresh });
   console.log(JSON.stringify(snaps));
 })();

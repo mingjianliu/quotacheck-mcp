@@ -81,6 +81,66 @@ describe("collectAntigravity", () => {
     expect(snap.subModels?.find(m => m.name === "gemini-2.5-pro")?.used).toBe(100);
   });
 
+  it("produces a QuotaSnapshot when 'agy' process is found without CSRF", async () => {
+    // Mock exec for ps aux showing 'agy'
+    vi.mocked(exec).mockImplementation((cmd, opts, callback) => {
+      const cb = (typeof opts === "function" ? opts : callback) as any;
+      if (cmd.includes("ps aux")) {
+        cb(null, "user 53467 10.7 2.1 437723152 719792 s013 R+ 6:55PM 48:00.68 agy", "");
+      } else if (cmd.includes("lsof") || cmd.includes("ss")) {
+        cb(null, "127.0.0.1:61354", "");
+      } else {
+        cb(null, "", "");
+      }
+      return {} as any;
+    });
+
+    // Mock https request
+    const mockRes = {
+      statusCode: 200,
+      on: vi.fn((event, handler) => {
+        if (event === "data") {
+          handler(JSON.stringify({
+            userStatus: {
+              cascadeModelConfigData: {
+                clientModelConfigs: [
+                  {
+                    name: "agy-model",
+                    quotaInfo: { remainingFraction: 0.5 }
+                  }
+                ]
+              }
+            }
+          }));
+        }
+        if (event === "end") {
+          handler();
+        }
+      })
+    };
+
+    const mockReq = {
+      on: vi.fn(),
+      write: vi.fn(),
+      end: vi.fn((cb: any) => {
+        if (cb) cb();
+      }),
+      destroy: vi.fn()
+    };
+
+    vi.mocked(request).mockImplementation((options, callback) => {
+      if (callback) callback(mockRes as any);
+      return mockReq as any;
+    });
+
+    const snap = await collectAntigravity();
+    expect(snap.source).toBe("antigravity");
+    expect(snap.error).toBeUndefined();
+    expect(snap.subModels?.length).toBe(1);
+    expect(snap.subModels?.[0].name).toBe("agy-model");
+    expect(snap.subModels?.[0].used).toBe(50);
+  });
+
   it("returns error when server info is not found", async () => {
     vi.mocked(exec).mockImplementation((cmd, opts, callback) => {
       const cb = (typeof opts === "function" ? opts : callback) as any;

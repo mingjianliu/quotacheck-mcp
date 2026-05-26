@@ -27,17 +27,28 @@ async function detectServerInfo(): Promise<{
   let csrfToken: string | null = null;
 
   for (const line of psOut.split("\n")) {
-    if (!line.includes("language_server")) continue;
-    const csrfMatch = line.match(/--csrf_token[=\s]+([A-Za-z0-9._/=+-]+)/);
-    if (!csrfMatch) continue;
+    const isLanguageServer = line.includes("language_server");
+    const isAgy = line.match(/\bagy\b/);
+    if (!isLanguageServer && !isAgy) continue;
+    if (line.includes("grep ") || line.includes("test-agy.ts") || line.includes("npx ")) continue;
 
+    const csrfMatch = line.match(/--csrf_token[=\s]+([A-Za-z0-9._/=+-]+)/);
     const parts = line.trim().split(/\s+/);
-    pid = parts[1];
-    csrfToken = csrfMatch[1];
-    break;
+    const currentPid = parts[1];
+
+    if (isLanguageServer) {
+      if (!csrfMatch) continue;
+      pid = currentPid;
+      csrfToken = csrfMatch[1];
+      break;
+    } else if (isAgy) {
+      pid = currentPid;
+      csrfToken = csrfMatch ? csrfMatch[1] : "";
+      break;
+    }
   }
 
-  if (!pid || !csrfToken) return null;
+  if (!pid || csrfToken === null) return null;
 
   const ports: number[] = [];
   try {
