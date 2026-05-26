@@ -1,6 +1,4 @@
-import { chromium } from "playwright";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { launchWithLockWorkaround } from "../utils/playwright.js";
 import type {
   Collector,
   CollectorContext,
@@ -9,51 +7,20 @@ import type {
 } from "../types.js";
 
 const USAGE_URL = "https://gemini.google.com/usage";
-const SESSION_FILE = "gemini-web-session.json";
 
-// Pure HTML parser — kept for unit testability without a browser.
-export function parseGeminiWeb(html: string, now: Date): QuotaSnapshot {
-  const subModels: SubModelBucket[] = [];
+const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
+const humanDelay = () => delay(200 + Math.random() * 600);
 
-  const rowRe =
-    /<div[^>]*data-model="([^"]+)"[^>]*>[\s\S]*?<span[^>]*data-used>(\d+)<\/span>[\s\S]*?<span[^>]*data-limit>(\d+)<\/span>/g;
-  let m: RegExpExecArray | null;
-  while ((m = rowRe.exec(html))) {
-    const used = Number(m[2]);
-    const limit = Number(m[3]);
-    subModels.push({
-      name: m[1],
-      used,
-      limit,
-      pct: limit > 0 ? (used / limit) * 100 : 0,
-    });
-  }
-
-  if (subModels.length === 0) {
-    return {
-      source: "gemini-web",
-      collectedAt: now.toISOString(),
-      error: "no model rows matched — page structure may have changed",
-    };
-  }
-
-  return {
-    source: "gemini-web",
-    collectedAt: now.toISOString(),
-    subModels,
-  };
-}
-
+// Gemini batchexecute responses start with )]}'\n (XSSI prefix), then
+// size-prefixed chunks. The "size" counts bytes across multiple frames, so
+// byte-slicing mis-aligns for non-trivial responses. Instead we scan for
+// wrb.fr frames directly with a regex — robust to any chunk layout.
 interface BatchCapture {
   url: string;
   rpcId: string;
   payload: unknown;
 }
 
-// Gemini batchexecute responses start with )]}'\n (XSSI prefix), then
-// size-prefixed chunks. The "size" counts bytes across multiple frames, so
-// byte-slicing mis-aligns for non-trivial responses. Instead we scan for
-// wrb.fr frames directly with a regex — robust to any chunk layout.
 export function parseBatchExecute(
   text: string,
 ): Array<{ rpcId: string; payload: unknown }> {
@@ -98,19 +65,18 @@ export function parseJSf9Qc(payload: unknown, now: Date): QuotaSnapshot | null {
 
   for (const bucket of buckets) {
     if (!Array.isArray(bucket) || bucket.length < 3) continue;
-    const [count, remainingFraction, modelType] = bucket;
     if (
-      typeof count !== "number" ||
-      typeof remainingFraction !== "number" ||
-      typeof modelType !== "number"
+      typeof bucket[0] !== "number" ||
+      typeof bucket[1] !== "number" ||
+      typeof bucket[2] !== "number"
     )
       continue;
 
+    const [, remainingFraction, modelType] = bucket;
     const name = GEMINI_MODEL_NAMES[modelType] ?? `gemini-model-${modelType}`;
     // field[1] is the consumed fraction (0 = none used, 1 = fully used),
     // despite the variable name I originally chose — confirmed against the web UI.
     const usedFraction = remainingFraction;
-    const used = Math.round(count * usedFraction);
     const pct = usedFraction * 100;
 
     let resetsAt: string | undefined;
@@ -135,54 +101,57 @@ export function parseJSf9Qc(payload: unknown, now: Date): QuotaSnapshot | null {
   };
 }
 
+// Pure HTML parser — kept for unit testability without a browser.
+export function parseGeminiWeb(html: string, now: Date): QuotaSnapshot {
+  const subModels: SubModelBucket[] = [];
+
+  const rowRe =
+    /<div[^>]*data-model="([^"]+)"[^>]*>[\s\S]*?<span[^>]*data-used>(\d+)<\/span>[\s\S]*?<span[^>]*data-limit>(\d+)<\/span>/g;
+  let m: RegExpExecArray | null;
+  while ((m = rowRe.exec(html)) !== null) {
+    const name = m[1];
+    const used = Number.parseInt(m[2], 10);
+    const limit = Number.parseInt(m[3], 10);
+    subModels.push({
+      name,
+      used,
+      limit,
+      pct: limit > 0 ? (used / limit) * 100 : 0,
+    });
+  }
+
+  if (subModels.length > 0) {
+    return {
+      source: "gemini-web",
+      collectedAt: now.toISOString(),
+      subModels,
+    };
+  }
+
+  return {
+    source: "gemini-web",
+    collectedAt: now.toISOString(),
+    error: "No quota rows found in HTML content",
+  };
+}
+
 export async function collectGeminiWeb(opts: {
-  homeDir: string;
+  chromeProfilePath: string;
   chromeExecutablePath?: string;
   timeoutMs: number;
   now?: Date;
 }): Promise<QuotaSnapshot> {
   const now = opts.now ?? new Date();
-  const sessionPath = join(
-    opts.homeDir,
-    ".config",
-    "quotacheck-mcp",
-    SESSION_FILE,
-  );
 
-  if (!existsSync(sessionPath)) {
-    return {
-      source: "gemini-web",
-      collectedAt: now.toISOString(),
-      error: `No session found. Run: npx quotacheck-mcp login gemini-web`,
-    };
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let storageState: any;
+  let cleanup: (() => Promise<void> | void) | null = null;
   try {
-    storageState = JSON.parse(readFileSync(sessionPath, "utf8"));
-  } catch (e) {
-    return {
-      source: "gemini-web",
-      collectedAt: now.toISOString(),
-      error: `Failed to read session file: ${(e as Error).message}`,
-    };
-  }
+    const result = await launchWithLockWorkaround(opts.chromeProfilePath, {
+      executablePath: opts.chromeExecutablePath,
+      timeout: opts.timeoutMs,
+    });
+    const context = result.context;
+    cleanup = result.cleanup;
 
-  const browser = await chromium.launch({
-    headless: true,
-    executablePath: opts.chromeExecutablePath,
-    args: ["--disable-blink-features=AutomationControlled"],
-    ignoreDefaultArgs: ["--enable-automation"],
-  });
-
-  try {
-    // storageState is typed `any` so it satisfies the overloaded newContext signature
-    const context = await browser.newContext({ storageState });
-    // Start reading response bodies immediately in the handler (bodies are
-    // discarded by Playwright shortly after the response fires — reading them
-    // later fails silently). Collect the Promises and await them all after
-    // the page wait so we don't check batchCaptured before reads complete.
     const batchCaptured: BatchCapture[] = [];
     const readPromises: Promise<void>[] = [];
     const page = await context.newPage();
@@ -191,7 +160,13 @@ export async function collectGeminiWeb(opts: {
       const url = res.url();
       const ct = res.headers()["content-type"] ?? "";
       if (!url.includes("gemini.google.com")) return;
-      if (!ct.includes("application/json") && !ct.includes("text/javascript"))
+
+      const isBatchExecute = url.includes("batchexecute");
+      if (
+        !isBatchExecute &&
+        !ct.includes("application/json") &&
+        !ct.includes("text/javascript")
+      )
         return;
 
       readPromises.push(
@@ -200,7 +175,6 @@ export async function collectGeminiWeb(opts: {
           .then((text) => {
             if (!text.startsWith(")]}'")) return;
             for (const item of parseBatchExecute(text)) {
-              console.error(`[gemini-web] batchexecute rpcId=${item.rpcId}`);
               batchCaptured.push({ url, ...item });
             }
           })
@@ -208,9 +182,8 @@ export async function collectGeminiWeb(opts: {
       );
     });
 
-    // "networkidle" never fires because Gemini keeps long-polling connections.
-    // Use "load", then wait for batchexecute XHR calls + async handlers.
     try {
+      await humanDelay();
       await page.goto(USAGE_URL, {
         timeout: opts.timeoutMs,
         waitUntil: "load",
@@ -224,6 +197,13 @@ export async function collectGeminiWeb(opts: {
     await Promise.all(readPromises);
 
     const currentUrl = page.url();
+    if (currentUrl.includes("google.com/sorry/index")) {
+      return {
+        source: "gemini-web",
+        collectedAt: now.toISOString(),
+        error: `Google CAPTCHA encountered. Open Chrome with your profile and solve the CAPTCHA at gemini.google.com.`,
+      };
+    }
     if (
       currentUrl.includes("accounts.google.com") ||
       currentUrl.includes("/signin")
@@ -235,30 +215,17 @@ export async function collectGeminiWeb(opts: {
       };
     }
 
-    // Try jSf9Qc batchexecute quota data
     for (const { rpcId, payload } of batchCaptured) {
       if (rpcId === "jSf9Qc") {
         const result = parseJSf9Qc(payload, now);
-        if (result) {
-          try {
-            const updated = await context.storageState();
-            const dir = join(opts.homeDir, ".config", "quotacheck-mcp");
-            mkdirSync(dir, { recursive: true });
-            writeFileSync(sessionPath, JSON.stringify(updated, null, 2));
-          } catch {
-            // ignore state refresh failures
-          }
-          return result;
-        }
+        if (result) return result;
       }
     }
 
-    // Fall back to HTML content parse
     const html = await page.content();
     const htmlResult = parseGeminiWeb(html, now);
     if (!htmlResult.error) return htmlResult;
 
-    // Neither approach worked — return captured rpcIds for debugging
     const capturedIds = batchCaptured.map((c) => c.rpcId);
     return {
       source: "gemini-web",
@@ -272,7 +239,7 @@ export async function collectGeminiWeb(opts: {
       error: (e as Error).message,
     };
   } finally {
-    await browser.close();
+    if (cleanup) await cleanup();
   }
 }
 
@@ -280,7 +247,7 @@ export const geminiWebCollector: Collector = {
   source: "gemini-web",
   collect: (ctx: CollectorContext) =>
     collectGeminiWeb({
-      homeDir: ctx.homeDir,
+      chromeProfilePath: ctx.chromeProfilePath,
       chromeExecutablePath: ctx.chromeExecutablePath,
       timeoutMs: ctx.playwrightTimeoutMs,
     }),
