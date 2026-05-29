@@ -89,6 +89,46 @@ describe("collectGeminiCli", () => {
     expect(writeFileSync).toHaveBeenCalled(); // Token was refreshed and saved
   });
 
+  it("sorts sub-models alphabetically by name", async () => {
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      access_token: "valid",
+      refresh_token: "fake-refresh-token",
+      expiry_date: Date.now() + 100000
+    }));
+    vi.mocked(existsSync).mockReturnValue(true);
+
+    vi.mocked(request).mockImplementation((options, callback) => {
+      const path = (options as any).path || "";
+      const isLoadCodeAssist = path.includes("loadCodeAssist");
+
+      const mockRes = {
+        statusCode: 200,
+        on: vi.fn((event, handler) => {
+          if (event === "data") {
+            if (isLoadCodeAssist) {
+              handler(JSON.stringify({ cloudaicompanionProject: "fake-project" }));
+            } else {
+              handler(JSON.stringify({
+                buckets: [
+                  { modelId: "gemini-2.5-pro", remainingFraction: 0.5 },
+                  { modelId: "gemini-2.5-flash", remainingFraction: 0.5 }
+                ]
+              }));
+            }
+          }
+          if (event === "end") handler();
+        })
+      };
+      if (callback) callback(mockRes as any);
+      return { on: vi.fn(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() } as any;
+    });
+
+    const snap = await collectGeminiCli({ homeDir: "/fake/home" } as any);
+    expect(snap.subModels).toBeDefined();
+    const names = snap.subModels?.map(m => m.name);
+    expect(names).toEqual(["Gemini 2.5 Flash", "Gemini 2.5 Pro"]);
+  });
+
   it("returns error snapshot when oauth_creds.json is missing", async () => {
     vi.mocked(existsSync).mockReturnValue(false);
 

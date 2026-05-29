@@ -239,10 +239,12 @@ export async function collectGeminiCli(
       });
     }
 
+    const sortedSubModels = subModels.sort((a, b) => a.name.localeCompare(b.name));
+
     return {
       source: "gemini-cli",
       collectedAt: now.toISOString(),
-      subModels,
+      subModels: sortedSubModels,
     };
   } catch (e: any) {
     return {
