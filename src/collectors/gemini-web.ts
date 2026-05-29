@@ -1,4 +1,6 @@
-import { launchWithLockWorkaround } from "../utils/playwright.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { launchAuthenticatedContext } from "../utils/playwright.js";
 import type {
   Collector,
   CollectorContext,
@@ -7,9 +9,45 @@ import type {
 } from "../types.js";
 
 const USAGE_URL = "https://gemini.google.com/usage";
+const LOGIN_HINT = "Run: npx quotacheck-mcp login gemini-web";
 
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
 const humanDelay = () => delay(200 + Math.random() * 600);
+
+function sessionPathFor(homeDir: string): string {
+  return join(homeDir, ".config", "quotacheck-mcp", "gemini-web-session.json");
+}
+
+// The first navigation after a cold browser launch intermittently fails with
+// net::ERR_SOCKET_NOT_CONNECTED. Retry transient connection/timeout errors a
+// few times before giving up; a real auth problem surfaces later as a redirect.
+async function gotoWithRetry(
+  page: import("playwright").Page,
+  url: string,
+  timeoutMs: number,
+  attempts = 3,
+): Promise<void> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await page.goto(url, { timeout: timeoutMs, waitUntil: "load" });
+      return;
+    } catch (err) {
+      lastErr = err;
+      const msg = (err as Error).message;
+      const transient =
+        msg.includes("ERR_SOCKET_NOT_CONNECTED") ||
+        msg.includes("ERR_CONNECTION") ||
+        msg.includes("Timeout") ||
+        msg.includes("timeout");
+      if (!transient) throw err;
+      await delay(1500);
+    }
+  }
+  // Exhausted retries on a transient error — let the caller treat it as a load
+  // timeout (captured responses, if any, are still inspected).
+  throw lastErr;
+}
 
 // Gemini batchexecute responses start with )]}'\n (XSSI prefix), then
 // size-prefixed chunks. The "size" counts bytes across multiple frames, so
@@ -136,16 +174,24 @@ export function parseGeminiWeb(html: string, now: Date): QuotaSnapshot {
 }
 
 export async function collectGeminiWeb(opts: {
-  chromeProfilePath: string;
+  sessionPath: string;
   chromeExecutablePath?: string;
   timeoutMs: number;
   now?: Date;
 }): Promise<QuotaSnapshot> {
   const now = opts.now ?? new Date();
 
+  if (!existsSync(opts.sessionPath)) {
+    return {
+      source: "gemini-web",
+      collectedAt: now.toISOString(),
+      error: `No saved session at ${opts.sessionPath}. ${LOGIN_HINT}`,
+    };
+  }
+
   let cleanup: (() => Promise<void> | void) | null = null;
   try {
-    const result = await launchWithLockWorkaround(opts.chromeProfilePath, {
+    const result = await launchAuthenticatedContext(opts.sessionPath, {
       executablePath: opts.chromeExecutablePath,
       timeout: opts.timeoutMs,
     });
@@ -184,10 +230,7 @@ export async function collectGeminiWeb(opts: {
 
     try {
       await humanDelay();
-      await page.goto(USAGE_URL, {
-        timeout: opts.timeoutMs,
-        waitUntil: "load",
-      });
+      await gotoWithRetry(page, USAGE_URL, opts.timeoutMs);
     } catch (gotoErr) {
       const msg = (gotoErr as Error).message;
       if (!msg.includes("Timeout") && !msg.includes("timeout")) throw gotoErr;
@@ -211,7 +254,17 @@ export async function collectGeminiWeb(opts: {
       return {
         source: "gemini-web",
         collectedAt: now.toISOString(),
-        error: `Session expired. Run: npx quotacheck-mcp login gemini-web`,
+        error: `Session expired. ${LOGIN_HINT}`,
+      };
+    }
+    // When the saved session has expired, /usage silently bounces to /app (the
+    // signed-out zero-state) rather than redirecting to accounts.google.com.
+    // Detect that so we emit an actionable error instead of a vague parse miss.
+    if (!currentUrl.includes("/usage")) {
+      return {
+        source: "gemini-web",
+        collectedAt: now.toISOString(),
+        error: `Not signed in — /usage redirected to ${new URL(currentUrl).pathname}. ${LOGIN_HINT}`,
       };
     }
 
@@ -247,7 +300,7 @@ export const geminiWebCollector: Collector = {
   source: "gemini-web",
   collect: (ctx: CollectorContext) =>
     collectGeminiWeb({
-      chromeProfilePath: ctx.chromeProfilePath,
+      sessionPath: sessionPathFor(ctx.homeDir),
       chromeExecutablePath: ctx.chromeExecutablePath,
       timeoutMs: ctx.playwrightTimeoutMs,
     }),
