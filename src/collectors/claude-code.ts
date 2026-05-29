@@ -10,7 +10,7 @@ import type {
 const KEYCHAIN_SERVICE = "Claude Code-credentials";
 const USAGE_API_HOST = "api.anthropic.com";
 const USAGE_API_PATH = "/api/oauth/usage";
-const USAGE_API_USER_AGENT = "claude-code/2.1";
+const USAGE_API_USER_AGENT = "claude-code/2.1.4";
 const USAGE_API_TIMEOUT_MS = 15_000;
 
 interface UsageBucket {
@@ -82,6 +82,19 @@ function fetchUsage(accessToken: string): Promise<UsageApiResponse> {
         let data = "";
         res.on("data", (chunk) => (data += chunk));
         res.on("end", () => {
+          if (res.statusCode === 429) {
+            // This endpoint applies an *escalating* penalty: every request made
+            // while rate-limited pushes retry-after further out. So we never
+            // retry here — we surface retry-after and let the cache cover the gap.
+            const retryAfter = res.headers["retry-after"];
+            const hint = retryAfter ? ` retry after ${retryAfter}s.` : "";
+            reject(
+              new Error(
+                `usage API rate-limited (HTTP 429).${hint} This endpoint is polled infrequently; repeated requests extend the limit.`,
+              ),
+            );
+            return;
+          }
           if (res.statusCode !== 200) {
             reject(
               new Error(
@@ -117,24 +130,6 @@ function toBucket(b: UsageBucket | null | undefined) {
   };
 }
 
-async function fetchUsageWithRetry(accessToken: string, retries = 5): Promise<UsageApiResponse> {
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await fetchUsage(accessToken);
-    } catch (err) {
-      if (err instanceof Error && err.message.includes("HTTP 429") && i < retries - 1) {
-        // Exponential backoff: 2s, 4s, 8s, 16s + jitter
-        const delay = Math.pow(2, i + 1) * 1000 + Math.random() * 1000;
-        console.error(`[claude-code] Rate limited. Retrying in ${Math.round(delay / 1000)}s...`);
-        await new Promise((r) => setTimeout(r, delay));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw new Error("Unreachable");
-}
-
 export async function collectClaudeCode(
   opts: {
     now?: Date;
@@ -154,7 +149,7 @@ export async function collectClaudeCode(
 
   let usage: UsageApiResponse;
   try {
-    usage = await fetchUsageWithRetry(token);
+    usage = await fetchUsage(token);
   } catch (err) {
     return {
       source: "claude-code",

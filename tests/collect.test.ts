@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runCollectors } from "../src/collect.js";
 import type {
   Collector,
@@ -12,6 +15,11 @@ const ctx: CollectorContext = {
   antigravityUsageBinary: "antigravity-usage",
   homeDir: "/tmp",
 };
+
+// Isolated cache dir so cache-persistence assertions don't fight other tests.
+function freshCtx(): CollectorContext {
+  return { ...ctx, homeDir: mkdtempSync(join(tmpdir(), "qc-")) };
+}
 
 function fake(
   source: QuotaSnapshot["source"],
@@ -57,6 +65,32 @@ describe("runCollectors", () => {
     const ag = out.find((s) => s.source === "antigravity");
     expect(web?.error).toBe("boom");
     expect(ag?.error).toBeUndefined();
+  });
+
+  it("serves the last-good cached snapshot when a refresh returns an error", async () => {
+    const c = freshCtx();
+    // First run succeeds and populates the cache.
+    await runCollectors(
+      [fake("claude-code", { session: { used: 42, limit: 100, pct: 42 } })],
+      c,
+      { forceRefresh: true },
+    );
+    // Now the source errors (e.g. rate-limited). We should keep showing the
+    // last-known-good data instead of replacing it with an error.
+    const out = await runCollectors([failing("claude-code")], c, {
+      forceRefresh: true,
+    });
+    const snap = out.find((s) => s.source === "claude-code");
+    expect(snap?.error).toBeUndefined();
+    expect(snap?.session?.pct).toBe(42);
+  });
+
+  it("surfaces the error when there is no prior good snapshot to fall back to", async () => {
+    const c = freshCtx();
+    const out = await runCollectors([failing("claude-code")], c, {
+      forceRefresh: true,
+    });
+    expect(out.find((s) => s.source === "claude-code")?.error).toBe("boom");
   });
 
   it("filters to requested subset when provided", async () => {
