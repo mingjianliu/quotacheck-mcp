@@ -185,6 +185,10 @@ export async function collectClaudeCode(
     });
   }
 
+  if (subModels.length) {
+    subModels.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   return {
     source: "claude-code",
     collectedAt: now.toISOString(),

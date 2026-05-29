@@ -80,6 +80,55 @@ describe("collectClaudeCode", () => {
     ).toBe(2000);
   });
 
+  it("sorts sub-models alphabetically", async () => {
+    // Mock keychain
+    vi.mocked(execFile).mockImplementation((cmd, args, opts, callback) => {
+      const cb = (typeof opts === "function" ? opts : callback) as any;
+      cb(
+        null,
+        JSON.stringify({ claudeAiOauth: { accessToken: "fake-token" } }),
+        "",
+      );
+      return {} as any;
+    });
+
+    // Mock response with sub-models in non-alphabetical order
+    const mockRes = {
+      statusCode: 200,
+      on: vi.fn((event, handler) => {
+        if (event === "data") {
+          handler(
+            JSON.stringify({
+              five_hour: { utilization: 0, resets_at: "2026-05-23T00:00:00Z" },
+              seven_day: { utilization: 0, resets_at: "2026-05-24T00:00:00Z" },
+              seven_day_opus: { utilization: 10, resets_at: "2026-05-24T00:00:00Z" },
+              seven_day_sonnet: { utilization: 20, resets_at: "2026-05-24T00:00:00Z" },
+              extra_usage: {
+                is_enabled: true,
+                monthly_limit: 100,
+                used_credits: 50,
+                utilization: 50,
+                currency: "USD",
+              },
+            }),
+          );
+        }
+        if (event === "end") handler();
+      }),
+    };
+
+    const mockReq = { on: vi.fn(), end: vi.fn(), destroy: vi.fn() };
+    vi.mocked(request).mockImplementation((options, callback) => {
+      if (callback) callback(mockRes as any);
+      return mockReq as any;
+    });
+
+    const snap = await collectClaudeCode();
+    const names = snap.subModels?.map((m) => m.name);
+    // Expected order: extra_usage_USD, opus, sonnet
+    expect(names).toEqual(["extra_usage_USD", "opus", "sonnet"]);
+  });
+
   it("returns error snapshot when keychain token is missing", async () => {
     vi.mocked(execFile).mockImplementation((cmd, args, opts, callback) => {
       const cb = (typeof opts === "function" ? opts : callback) as any;
