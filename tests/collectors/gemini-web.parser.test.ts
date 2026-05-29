@@ -26,6 +26,16 @@ describe("parseGeminiWeb", () => {
       expect(m.pct).toBeLessThanOrEqual(100);
     }
   });
+
+  it("sorts subModels alphabetically by name", () => {
+    const unsortedHtml = `
+      <div data-model="Z-model"><span data-used>10</span><span data-limit>100</span></div>
+      <div data-model="A-model"><span data-used>20</span><span data-limit>100</span></div>
+    `;
+    const snap = parseGeminiWeb(unsortedHtml, NOW);
+    expect(snap.subModels![0].name).toBe("A-model");
+    expect(snap.subModels![1].name).toBe("Z-model");
+  });
 });
 
 describe("parseBatchExecute", () => {
@@ -105,5 +115,21 @@ describe("parseJSf9Qc", () => {
     expect(pro.used).toBe(36);
     expect(pro.pct).toBeCloseTo(36, 0);
     expect(pro.resetsAt).toBe(new Date(1779778920 * 1000).toISOString());
+  });
+
+  it("sorts subModels alphabetically by name", () => {
+    // 2 = "weekly quota", 1 = "session quota"
+    // "weekly quota" comes after "session quota" alphabetically
+    const payload = [
+      2,
+      [
+        [30943, 0.36, 2, [[1779778920, 0]]],
+        [2400, 0.0, 1, [[1779588120, 0]]],
+      ],
+      false,
+    ];
+    const snap = parseJSf9Qc(payload, NOW);
+    expect(snap!.subModels![0].name).toBe("session quota");
+    expect(snap!.subModels![1].name).toBe("weekly quota");
   });
 });

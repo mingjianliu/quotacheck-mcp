@@ -132,6 +132,8 @@ export function parseJSf9Qc(payload: unknown, now: Date): QuotaSnapshot | null {
 
   if (subModels.length === 0) return null;
 
+  subModels.sort((a, b) => a.name.localeCompare(b.name));
+
   return {
     source: "gemini-web",
     collectedAt: now.toISOString(),
@@ -159,6 +161,7 @@ export function parseGeminiWeb(html: string, now: Date): QuotaSnapshot {
   }
 
   if (subModels.length > 0) {
+    subModels.sort((a, b) => a.name.localeCompare(b.name));
     return {
       source: "gemini-web",
       collectedAt: now.toISOString(),
