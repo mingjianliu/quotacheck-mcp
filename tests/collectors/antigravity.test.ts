@@ -179,4 +179,62 @@ describe("collectAntigravity", () => {
     expect(snap.source).toBe("antigravity");
     expect(snap.error).toMatch(/Network Error|Failed to contact/);
   });
+
+  it("sorts subModels alphabetically by name", async () => {
+    // Mock exec for ps aux showing 'agy'
+    vi.mocked(exec).mockImplementation((cmd, opts, callback) => {
+      const cb = (typeof opts === "function" ? opts : callback) as any;
+      if (cmd.includes("ps aux")) {
+        cb(null, "user 53467 10.7 2.1 437723152 719792 s013 R+ 6:55PM 48:00.68 agy", "");
+      } else if (cmd.includes("lsof") || cmd.includes("ss")) {
+        cb(null, "127.0.0.1:61354", "");
+      } else {
+        cb(null, "", "");
+      }
+      return {} as any;
+    });
+
+    // Mock https request with models in non-alphabetical order
+    const mockRes = {
+      statusCode: 200,
+      on: vi.fn((event, handler) => {
+        if (event === "data") {
+          handler(JSON.stringify({
+            userStatus: {
+              cascadeModelConfigData: {
+                clientModelConfigs: [
+                  { name: "zebra", quotaInfo: { remainingFraction: 1 } },
+                  { name: "apple", quotaInfo: { remainingFraction: 1 } },
+                  { name: "mango", quotaInfo: { remainingFraction: 1 } }
+                ]
+              }
+            }
+          }));
+        }
+        if (event === "end") {
+          handler();
+        }
+      })
+    };
+
+    const mockReq = {
+      on: vi.fn(),
+      write: vi.fn(),
+      end: vi.fn((cb: any) => {
+        if (cb) cb();
+      }),
+      destroy: vi.fn()
+    };
+
+    vi.mocked(request).mockImplementation((options, callback) => {
+      if (callback) callback(mockRes as any);
+      return mockReq as any;
+    });
+
+    const snap = await collectAntigravity();
+    expect(snap.source).toBe("antigravity");
+    expect(snap.subModels).toBeDefined();
+    const names = snap.subModels!.map(m => m.name);
+    expect(names).toEqual(["apple", "mango", "zebra"]);
+  });
 });

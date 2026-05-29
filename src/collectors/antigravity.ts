@@ -177,6 +177,8 @@ export async function collectAntigravity(): Promise<QuotaSnapshot> {
       });
     }
 
+    subModels.sort((a, b) => a.name.localeCompare(b.name));
+
     return {
       source: "antigravity",
       collectedAt: now.toISOString(),
