@@ -116,10 +116,12 @@ export async function runCollectors(
     saveCache(ctx, cache);
   }
 
-  return selected.map((c) => {
+  const result = selected.map((c) => {
     return (
       cachedResults.find((r) => r.source === c.source) ||
       freshResults.find((r) => r.source === c.source)!
     );
   });
+
+  return result.sort((a, b) => a.source.localeCompare(b.source));
 }

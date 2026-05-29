@@ -105,4 +105,18 @@ describe("runCollectors", () => {
     });
     expect(out.map((s) => s.source)).toEqual(["claude-code"]);
   });
+
+  it("returns snapshots in a fixed alphabetical order by source", async () => {
+    const collectors = [
+      fake("gemini-cli", {}),
+      fake("claude-code", {}),
+      fake("antigravity", {}),
+    ];
+    const out = await runCollectors(collectors, ctx, { forceRefresh: true });
+    expect(out.map((s) => s.source)).toEqual([
+      "antigravity",
+      "claude-code",
+      "gemini-cli",
+    ]);
+  });
 });
