@@ -39,6 +39,18 @@ function saveCache(
   }
 }
 
+/**
+ * How stale a last-good snapshot may be before it stops standing in for a
+ * failure.
+ *
+ * The substitution exists to ride out *transient* faults — a 429, a dropped
+ * connection. Without a bound it also covers permanent ones: a gemini-web
+ * session that expired in June kept being served as the current reading for
+ * two months, because every failure re-substituted the same old snapshot. Past
+ * this window the error is the honest answer.
+ */
+export const MAX_STALE_FALLBACK_MS = 60 * 60 * 1000;
+
 export async function runCollectors(
   collectors: Collector[],
   ctx: CollectorContext,
@@ -111,8 +123,18 @@ export async function runCollectors(
     // the cache exists precisely to ride out transient failures. We still bump
     // `ts` so the TTL backoff applies and we don't immediately re-hit a source
     // whose rate limit escalates on every request.
+    // Age is measured from the snapshot's own collectedAt, not the cache entry's
+    // `ts`: `ts` is bumped on every failure to drive TTL backoff, so an age
+    // derived from it would reset with each failure and never expire.
     const prev = cache[source];
-    if (snapshot.error && prev && !prev.snapshot.error) {
+    const prevAge = prev ? now - Date.parse(prev.snapshot.collectedAt) : Infinity;
+    if (
+      snapshot.error &&
+      prev &&
+      !prev.snapshot.error &&
+      Number.isFinite(prevAge) &&
+      prevAge <= MAX_STALE_FALLBACK_MS
+    ) {
       cache[source] = { snapshot: prev.snapshot, ts: now };
       return prev.snapshot;
     }
