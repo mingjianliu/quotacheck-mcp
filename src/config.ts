@@ -9,7 +9,7 @@ const ConfigSchema = z.object({
   chromeProfilePath: z.string(),
   chromeExecutablePath: z.string().optional(),
   enabledSources: z.array(
-    z.enum(["claude-code", "gemini-cli", "gemini-web", "antigravity"]),
+    z.enum(["claude-code", "gemini-web", "antigravity"]),
   ),
   playwrightTimeoutMs: z.number().int().positive(),
   antigravityUsageBinary: z.string(),

@@ -61,7 +61,7 @@ describe("renderReport", () => {
   it("escapes hostile text coming from collector output", () => {
     const out = html([
       {
-        source: "gemini-cli",
+        source: "antigravity",
         collectedAt: new Date(T0).toISOString(),
         subModels: [
           { name: '<img src=x onerror="alert(1)">', used: 1, limit: 100, pct: 1 },
@@ -82,7 +82,7 @@ describe("renderReport", () => {
   it("gives a never-used bucket a compact row instead of an empty chart, and sorts it last", () => {
     const out = html([
       {
-        source: "gemini-cli",
+        source: "gemini-web",
         collectedAt: new Date(T0).toISOString(),
         subModels: [
           { name: "AAA Idle", used: 0, limit: 100, pct: 0 },
@@ -90,7 +90,7 @@ describe("renderReport", () => {
         ],
       },
       {
-        source: "gemini-cli",
+        source: "gemini-web",
         collectedAt: new Date(T0 + HOUR).toISOString(),
         subModels: [
           { name: "AAA Idle", used: 0, limit: 100, pct: 0 },

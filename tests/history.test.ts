@@ -47,10 +47,10 @@ describe("history store", () => {
       snap("claude-code", "2026-08-01T10:00:00.000Z", {
         session: { used: 10, limit: 100, pct: 10 },
       }),
-      snap("gemini-cli", "2026-08-01T10:00:00.000Z"),
+      snap("gemini-web", "2026-08-01T10:00:00.000Z"),
     ]);
     const out = readHistory(home, { since: new Date("2026-07-01T00:00:00Z") });
-    expect(out.map((s) => s.source)).toEqual(["claude-code", "gemini-cli"]);
+    expect(out.map((s) => s.source)).toEqual(["claude-code", "gemini-web"]);
     expect(out[0].session?.pct).toBe(10);
   });
 
@@ -86,7 +86,7 @@ describe("history store", () => {
   it("honours an until bound and a source filter", () => {
     add(home, [
       snap("claude-code", "2026-08-10T00:00:00.000Z"),
-      snap("gemini-cli", "2026-08-10T00:00:00.000Z"),
+      snap("gemini-web", "2026-08-10T00:00:00.000Z"),
       snap("claude-code", "2026-08-25T00:00:00.000Z"),
     ]);
     const out = readHistory(home, {
@@ -117,10 +117,10 @@ describe("history store", () => {
       '{"source":"claude-code","collectedAt":"2026-08-01T00:00:00.000Z"}\n' +
         "{not json\n" +
         "\n" +
-        '{"source":"gemini-cli","collectedAt":"2026-08-02T00:00:00.000Z"}\n',
+        '{"source":"gemini-web","collectedAt":"2026-08-02T00:00:00.000Z"}\n',
     );
     const out = readHistory(home, { since: new Date("2026-08-01T00:00:00Z") });
-    expect(out.map((s) => s.source)).toEqual(["claude-code", "gemini-cli"]);
+    expect(out.map((s) => s.source)).toEqual(["claude-code", "gemini-web"]);
   });
 
   it("records error snapshots so a gap is distinguishable from zero usage", () => {

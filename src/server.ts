@@ -16,13 +16,11 @@ import {
   type SourceId,
 } from "./types.js";
 import { claudeCodeCollector } from "./collectors/claude-code.js";
-import { geminiCliCollector } from "./collectors/gemini-cli.js";
 import { antigravityCollector } from "./collectors/antigravity.js";
 import { geminiWebCollector } from "./collectors/gemini-web.js";
 
 const ALL_COLLECTORS: Collector[] = [
   claudeCodeCollector,
-  geminiCliCollector,
   antigravityCollector,
   geminiWebCollector,
 ];

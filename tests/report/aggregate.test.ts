@@ -54,7 +54,7 @@ describe("buildReport", () => {
   it("gives each sub-model its own series keyed by name", () => {
     const r = report([
       {
-        source: "gemini-cli",
+        source: "gemini-web",
         collectedAt: at(0),
         subModels: [
           { name: "Gemini 3 Pro", used: 5, limit: 100, pct: 5 },
@@ -62,7 +62,7 @@ describe("buildReport", () => {
         ],
       },
       {
-        source: "gemini-cli",
+        source: "gemini-web",
         collectedAt: at(5 * MIN),
         subModels: [{ name: "Gemini 3 Pro", used: 9, limit: 100, pct: 9 }],
       },
@@ -99,7 +99,7 @@ describe("buildReport", () => {
 
   it("orders sources alphabetically and series session-then-weekly-then-submodels", () => {
     const r = report([
-      { source: "gemini-cli", collectedAt: at(0), subModels: [{ name: "Z", used: 1, limit: 100, pct: 1 }] },
+      { source: "gemini-web", collectedAt: at(0), subModels: [{ name: "Z", used: 1, limit: 100, pct: 1 }] },
       {
         source: "antigravity",
         collectedAt: at(0),
@@ -109,7 +109,7 @@ describe("buildReport", () => {
     ]);
     expect(r.sources.map((s) => s.source)).toEqual([
       "antigravity",
-      "gemini-cli",
+      "gemini-web",
     ]);
     expect(r.sources[0].series.map((s) => s.kind)).toEqual([
       "weekly",

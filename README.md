@@ -4,7 +4,6 @@ A robust Model Context Protocol (MCP) server and native macOS Menu Bar applicati
 
 Currently, `quotacheck-mcp` monitors and compiles usage across the following sources:
 - **Claude Code**: Retrieves utilization rates for session/weekly quotas by extracting OAuth tokens securely from the macOS Keychain and querying Anthropic's OAuth usage endpoints.
-- **Gemini CLI / Cloud Code**: Queries Google's internal Cloud Code APIs by loading credentials from your local Gemini configuration.
 - **Gemini Web**: Launches a headless browser using Playwright to extract live usage metrics from the Gemini web dashboard.
 - **Antigravity**: Discovers the local language server port, retrieves the CSRF token, and queries its gRPC-over-JSON status endpoint.
 
@@ -73,7 +72,6 @@ Alternatively, you can manually configure your `~/.claude/config.json` to regist
   "chromeExecutablePath": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "enabledSources": [
     "claude-code",
-    "gemini-cli",
     "gemini-web",
     "antigravity"
   ],
@@ -107,7 +105,7 @@ Render the recorded history as a self-contained HTML page:
 ```bash
 npm run report                                     # last 7 days
 npm run report -- --days 30
-npm run report -- --days 7 --sources claude-code,gemini-cli
+npm run report -- --days 7 --sources claude-code,gemini-web
 npm run report -- --days 30 --out ~/Desktop/quota.html
 ```
 
@@ -164,9 +162,9 @@ This opens a headed Chrome browser. Perform your Google login if requested; the 
          ┌───────────────────────┼───────────────────────┐
          ▼                       ▼                       ▼
 ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
-│   claude-code    │   │    gemini-cli    │   │    gemini-web    │
-│  Reads Keychain  │   │ Reads .gemini/   │   │ Playwright XSSI  │
-│  & Queries API   │   │   & Google API   │   │  JSON Scraper    │
+│   claude-code    │   │    gemini-web    │   │   antigravity    │
+│  Reads Keychain  │   │ Playwright XSSI  │   │  Local language  │
+│  & Queries API   │   │  JSON Scraper    │   │  server over RPC │
 └──────────────────┘   └──────────────────┘   └──────────────────┘
 ```
 
@@ -174,16 +172,11 @@ This opens a headed Chrome browser. Perform your Google login if requested; the 
 - **Mechanism**: Reads the Anthropic OAuth credentials from the macOS Keychain under the service `"Claude Code-credentials"`.
 - **API Call**: Makes an HTTPS GET request to `api.anthropic.com/api/oauth/usage` with the retrieved token to extract the 5-hour, 7-day, and sub-model (Opus, Sonnet, Omelette/Design) utilization percentages.
 
-### 2. Gemini CLI (`gemini-cli`)
-- **Mechanism**: Inspects `~/.gemini/oauth_creds.json` for OAuth tokens.
-- **Refresh Flow**: If the token is near expiration, refreshes it against Google OAuth endpoints (`oauth2.googleapis.com/token`) and saves it.
-- **API Call**: Invokes the `loadCodeAssist` RPC to find the project ID, then polls the `retrieveUserQuota` endpoint to fetch remaining quota segments.
-
-### 3. Gemini Web (`gemini-web`)
+### 2. Gemini Web (`gemini-web`)
 - **Mechanism**: Runs a headless instance of Playwright targeting `https://gemini.google.com/usage`.
 - **Parser**: Listens to raw Google `batchexecute` JSON responses. It extracts the XSSI chunk frames specifically looking for RPC `jSf9Qc` (which contains consumed quota fractions and reset timestamps). If the API response isn't caught, falls back to parsing the static HTML DOM.
 
-### 4. Antigravity (`antigravity`)
+### 3. Antigravity (`antigravity`)
 - **Mechanism**: Inspects active processes (`ps aux`) to locate the language server (`language_server` or `agy`) and extracts its `--csrf_token` argument.
 - **Connection**: Detects the local port the process is listening on using `lsof` (macOS) or `ss` (Linux).
 - **API Call**: Sends a POST request containing the CSRF token to `http://127.0.0.1:<port>/exa.language_server_pb.LanguageServerService/GetUserStatus` to parse model quotas.

@@ -19,7 +19,6 @@ describe("loadConfig", () => {
     const cfg = loadConfig({ homeDir: tmp });
     expect(cfg.enabledSources).toEqual([
       "claude-code",
-      "gemini-cli",
       "gemini-web",
       "antigravity",
     ]);

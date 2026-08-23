@@ -14,7 +14,6 @@ export const MAX_CYCLE_ROWS = 60;
 
 const SOURCE_LABELS: Record<SourceId, string> = {
   "claude-code": "Claude Code",
-  "gemini-cli": "Gemini CLI",
   "gemini-web": "Gemini Web",
   antigravity: "Antigravity",
 };

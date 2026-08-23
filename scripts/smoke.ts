@@ -3,13 +3,11 @@ import { loadConfig } from "../src/config.js";
 import { runCollectors } from "../src/collect.js";
 import type { Collector, CollectorContext } from "../src/types.js";
 import { claudeCodeCollector } from "../src/collectors/claude-code.js";
-import { geminiCliCollector } from "../src/collectors/gemini-cli.js";
 import { antigravityCollector } from "../src/collectors/antigravity.js";
 import { geminiWebCollector } from "../src/collectors/gemini-web.js";
 
 const ALL: Collector[] = [
   claudeCodeCollector,
-  geminiCliCollector,
   antigravityCollector,
   geminiWebCollector,
 ];
