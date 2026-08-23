@@ -39,6 +39,8 @@ async function main() {
     playwrightTimeoutMs: cfg.playwrightTimeoutMs,
     antigravityUsageBinary: cfg.antigravityUsageBinary,
     homeDir: homedir(),
+    historyEnabled: cfg.historyEnabled,
+    historyRetentionDays: cfg.historyRetentionDays,
   };
   const enabled = ALL_COLLECTORS.filter((c) =>
     cfg.enabledSources.includes(c.source),

@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { appendHistory } from "./history.js";
 import type {
   Collector,
   CollectorContext,
@@ -85,6 +86,8 @@ export async function runCollectors(
     }),
   );
 
+  const recorded: QuotaSnapshot[] = [];
+
   const freshResults = results.map((r, i) => {
     const source = toRun[i].source;
     let snapshot: QuotaSnapshot;
@@ -97,6 +100,11 @@ export async function runCollectors(
         error: r.reason instanceof Error ? r.reason.message : String(r.reason),
       };
     }
+    // Record what the collector actually returned, before the substitution
+    // below can swap a failure for a stale success. History is an audit log:
+    // an outage must read as an outage, not as a flat line of unchanged usage.
+    recorded.push(snapshot);
+
     // A collector can fail by rejecting OR by resolving an error snapshot
     // (e.g. claude-code on HTTP 429). When that happens but we hold a prior
     // good snapshot, keep showing it rather than replacing it with the error —
@@ -114,6 +122,11 @@ export async function runCollectors(
 
   if (toRun.length > 0) {
     saveCache(ctx, cache);
+    if (ctx.historyEnabled !== false) {
+      appendHistory(ctx.homeDir, recorded, {
+        retentionDays: ctx.historyRetentionDays,
+      });
+    }
   }
 
   const result = selected.map((c) => {

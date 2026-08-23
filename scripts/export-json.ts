@@ -22,6 +22,8 @@ const ALL: Collector[] = [
     playwrightTimeoutMs: cfg.playwrightTimeoutMs,
     antigravityUsageBinary: cfg.antigravityUsageBinary,
     homeDir: homedir(),
+    historyEnabled: cfg.historyEnabled,
+    historyRetentionDays: cfg.historyRetentionDays,
   };
   const enabled = ALL.filter((c) => cfg.enabledSources.includes(c.source));
   const forceRefresh = process.argv.includes("--force") || process.argv.includes("-f");

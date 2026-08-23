@@ -42,4 +42,8 @@ export interface CollectorContext {
   playwrightTimeoutMs: number;
   antigravityUsageBinary: string;
   homeDir: string;
+  /** Defaults to true when unset. */
+  historyEnabled?: boolean;
+  /** Defaults to DEFAULT_RETENTION_DAYS when unset. */
+  historyRetentionDays?: number;
 }

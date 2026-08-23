@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import { z } from "zod";
 import { ALL_SOURCES, type SourceId } from "./types.js";
+import { DEFAULT_RETENTION_DAYS } from "./history.js";
 
 const ConfigSchema = z.object({
   chromeProfilePath: z.string(),
@@ -12,6 +13,8 @@ const ConfigSchema = z.object({
   ),
   playwrightTimeoutMs: z.number().int().positive(),
   antigravityUsageBinary: z.string(),
+  historyEnabled: z.boolean(),
+  historyRetentionDays: z.number().int().positive(),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -41,6 +44,8 @@ export function loadConfig(opts: { homeDir?: string } = {}): Config {
     enabledSources: [...ALL_SOURCES] as SourceId[],
     playwrightTimeoutMs: 8000,
     antigravityUsageBinary: "agy",
+    historyEnabled: true,
+    historyRetentionDays: DEFAULT_RETENTION_DAYS,
   };
 
   const path = join(home, ".config", "quotacheck-mcp", "config.json");
