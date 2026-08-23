@@ -39,6 +39,8 @@ export interface CollectorContext {
   chromeExecutablePath?: string;
   playwrightTimeoutMs: number;
   homeDir: string;
+  /** Antigravity CLI used to read quota. Defaults to "agy". */
+  antigravityUsageBinary?: string;
   /** Defaults to true when unset. */
   historyEnabled?: boolean;
   /** Defaults to DEFAULT_RETENTION_DAYS when unset. */

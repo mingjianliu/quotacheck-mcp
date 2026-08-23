@@ -76,6 +76,7 @@ Alternatively, you can manually configure your `~/.claude/config.json` to regist
     "antigravity"
   ],
   "playwrightTimeoutMs": 8000,
+  "antigravityUsageBinary": "agy",
   "historyEnabled": true,
   "historyRetentionDays": 90
 }
@@ -176,9 +177,9 @@ This opens a headed Chrome browser. Perform your Google login if requested; the 
 - **Parser**: Listens to raw Google `batchexecute` JSON responses. It extracts the XSSI chunk frames specifically looking for RPC `jSf9Qc` (which contains consumed quota fractions and reset timestamps). If the API response isn't caught, falls back to parsing the static HTML DOM.
 
 ### 3. Antigravity (`antigravity`)
-- **Mechanism**: Inspects active processes (`ps aux`) to locate the language server (`language_server` or `agy`) and extracts its `--csrf_token` argument.
-- **Connection**: Detects the local port the process is listening on using `lsof` (macOS) or `ss` (Linux).
-- **API Call**: Sends a POST request containing the CSRF token to `http://127.0.0.1:<port>/exa.language_server_pb.LanguageServerService/GetUserStatus` to parse model quotas.
+- **Mechanism**: Runs `agy -p "/quota"` (the binary is configurable via `antigravityUsageBinary`) and parses its tab-separated rows: group, limit window, remaining percent, reset time. Slash commands expand in print mode, so this consumes no model tokens.
+- **Shape**: Antigravity meters two *groups* — Gemini models, and Claude/GPT models — each with a weekly limit and a 5-hour limit, giving four buckets. Limits are per group, not per model.
+- **Why not the language server**: its `GetUserStatus` RPC exposes only `quotaInfo.remainingFraction`, which reflects the 5-hour window alone and repeats the same group-wide number for every model. The weekly limit — the one that actually runs out — is absent, and none of its 237 RPC methods exposes it. The RPC also required Antigravity.app to be running, because the port and CSRF token were read from the live process; the CLI does not.
 
 ---
 

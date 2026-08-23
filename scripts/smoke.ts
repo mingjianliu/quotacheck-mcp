@@ -18,6 +18,7 @@ const ALL: Collector[] = [
     chromeProfilePath: cfg.chromeProfilePath,
     chromeExecutablePath: cfg.chromeExecutablePath,
     playwrightTimeoutMs: cfg.playwrightTimeoutMs,
+    antigravityUsageBinary: cfg.antigravityUsageBinary,
     homeDir: homedir(),
   };
   const enabled = ALL.filter((c) => cfg.enabledSources.includes(c.source));

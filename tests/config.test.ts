@@ -24,6 +24,7 @@ describe("loadConfig", () => {
     ]);
     expect(cfg.playwrightTimeoutMs).toBe(8000);
     expect(cfg.historyEnabled).toBe(true);
+    expect(cfg.antigravityUsageBinary).toBe("agy");
     expect(cfg.historyRetentionDays).toBe(90);
     expect(cfg.chromeProfilePath).toContain("Chrome");
   });

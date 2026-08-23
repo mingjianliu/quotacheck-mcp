@@ -1,240 +1,74 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { collectAntigravity } from "../../src/collectors/antigravity.js";
-import { exec } from "node:child_process";
-import { request } from "node:https";
+import { describe, it, expect } from "vitest";
+import { parseQuotaOutput } from "../../src/collectors/antigravity.js";
 
-vi.mock("node:child_process", () => ({
-  exec: vi.fn(),
-}));
+// Verbatim `agy -p "/quota"` output, tab separated.
+const SAMPLE = [
+  "Gemini Models\tWeekly Limit Remaining\t56%\t2026-08-26T01:17:29Z",
+  "Gemini Models\tFive Hour Limit Remaining\t100%\t2026-08-23T10:47:25Z",
+  "Claude and GPT models\tWeekly Limit Remaining\t100%\t2026-08-30T05:47:25Z",
+  "Claude and GPT models\tFive Hour Limit Remaining\t100%\t2026-08-23T10:47:25Z",
+].join("\n");
 
-vi.mock("node:https", () => ({
-  request: vi.fn(),
-}));
-
-describe("collectAntigravity", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+describe("parseQuotaOutput", () => {
+  it("returns one bucket per group and limit window, in a stable order", () => {
+    // Group ascending, and within a group the weekly window before the 5-hour
+    // one, so the pair reads together and history rows never reshuffle.
+    const out = parseQuotaOutput(SAMPLE);
+    expect(out.map((b) => b.name)).toEqual([
+      "Claude and GPT models · Weekly",
+      "Claude and GPT models · 5-hour",
+      "Gemini Models · Weekly",
+      "Gemini Models · 5-hour",
+    ]);
   });
 
-  it("produces a QuotaSnapshot with subModels populated", async () => {
-    // Mock exec for ps aux and lsof/ss
-    vi.mocked(exec).mockImplementation((cmd, opts, callback) => {
-      const cb = (typeof opts === "function" ? opts : callback) as any;
-      if (cmd.includes("ps aux")) {
-        cb(null, "user 1234 0.0 0.0 123 456 ? S 00:00:00 language_server --csrf_token=fake-token", "");
-      } else if (cmd.includes("lsof") || cmd.includes("ss")) {
-        // Return fake ports
-        cb(null, "127.0.0.1:9090", "");
-      } else {
-        cb(null, "", "");
-      }
-      return {} as any;
-    });
-
-    // Mock https request
-    const mockRes = {
-      statusCode: 200,
-      on: vi.fn((event, handler) => {
-        if (event === "data") {
-          handler(JSON.stringify({
-            userStatus: {
-              cascadeModelConfigData: {
-                clientModelConfigs: [
-                  {
-                    name: "gemini-2.5-flash",
-                    quotaInfo: { remainingFraction: 0.66 }
-                  },
-                  {
-                    name: "gemini-2.5-pro",
-                    quotaInfo: { remainingFraction: 0 }
-                  }
-                ]
-              }
-            }
-          }));
-        }
-        if (event === "end") {
-          handler();
-        }
-      })
-    };
-
-    const mockReq = {
-      on: vi.fn(),
-      write: vi.fn(),
-      end: vi.fn((cb: any) => {
-        if (cb) cb();
-      }),
-      destroy: vi.fn()
-    };
-
-    vi.mocked(request).mockImplementation((options, callback) => {
-      if (callback) callback(mockRes as any);
-      return mockReq as any;
-    });
-
-    const snap = await collectAntigravity();
-    expect(snap.source).toBe("antigravity");
-    expect(snap.error).toBeUndefined();
-    expect(snap.subModels?.length).toBe(2);
-    expect(snap.subModels?.find(m => m.name === "gemini-2.5-flash")?.used).toBe(34);
-    expect(snap.subModels?.find(m => m.name === "gemini-2.5-pro")?.used).toBe(100);
+  it("converts remaining into used — agy reports what is left, we report what is spent", () => {
+    const gemWeekly = parseQuotaOutput(SAMPLE).find((b) => b.name === "Gemini Models · Weekly")!;
+    expect(gemWeekly.pct).toBe(44);
+    expect(gemWeekly.used).toBe(44);
+    expect(gemWeekly.limit).toBe(100);
   });
 
-  it("produces a QuotaSnapshot when 'agy' process is found without CSRF", async () => {
-    // Mock exec for ps aux showing 'agy'
-    vi.mocked(exec).mockImplementation((cmd, opts, callback) => {
-      const cb = (typeof opts === "function" ? opts : callback) as any;
-      if (cmd.includes("ps aux")) {
-        cb(null, "user 53467 10.7 2.1 437723152 719792 s013 R+ 6:55PM 48:00.68 agy", "");
-      } else if (cmd.includes("lsof") || cmd.includes("ss")) {
-        cb(null, "127.0.0.1:61354", "");
-      } else {
-        cb(null, "", "");
-      }
-      return {} as any;
-    });
-
-    // Mock https request
-    const mockRes = {
-      statusCode: 200,
-      on: vi.fn((event, handler) => {
-        if (event === "data") {
-          handler(JSON.stringify({
-            userStatus: {
-              cascadeModelConfigData: {
-                clientModelConfigs: [
-                  {
-                    name: "agy-model",
-                    quotaInfo: { remainingFraction: 0.5 }
-                  }
-                ]
-              }
-            }
-          }));
-        }
-        if (event === "end") {
-          handler();
-        }
-      })
-    };
-
-    const mockReq = {
-      on: vi.fn(),
-      write: vi.fn(),
-      end: vi.fn((cb: any) => {
-        if (cb) cb();
-      }),
-      destroy: vi.fn()
-    };
-
-    vi.mocked(request).mockImplementation((options, callback) => {
-      if (callback) callback(mockRes as any);
-      return mockReq as any;
-    });
-
-    const snap = await collectAntigravity();
-    expect(snap.source).toBe("antigravity");
-    expect(snap.error).toBeUndefined();
-    expect(snap.subModels?.length).toBe(1);
-    expect(snap.subModels?.[0].name).toBe("agy-model");
-    expect(snap.subModels?.[0].used).toBe(50);
+  it("carries each window's own reset time", () => {
+    const out = parseQuotaOutput(SAMPLE);
+    const by = (n: string) => out.find((b) => b.name === n)!;
+    expect(by("Gemini Models · Weekly").resetsAt).toBe("2026-08-26T01:17:29Z");
+    expect(by("Gemini Models · 5-hour").resetsAt).toBe("2026-08-23T10:47:25Z");
   });
 
-  it("returns error when server info is not found", async () => {
-    vi.mocked(exec).mockImplementation((cmd, opts, callback) => {
-      const cb = (typeof opts === "function" ? opts : callback) as any;
-      cb(null, "nothing interesting here", "");
-      return {} as any;
-    });
-
-    const snap = await collectAntigravity();
-    expect(snap.source).toBe("antigravity");
-    expect(snap.error).toMatch(/Antigravity language server not found/);
+  it("keeps fractional percentages", () => {
+    const out = parseQuotaOutput("Gemini Models\tWeekly Limit Remaining\t56.34%\t2026-08-26T01:17:29Z");
+    expect(out[0].pct).toBeCloseTo(43.66, 2);
   });
 
-  it("returns error when gRPC request fails", async () => {
-    vi.mocked(exec).mockImplementation((cmd, opts, callback) => {
-      const cb = (typeof opts === "function" ? opts : callback) as any;
-      if (cmd.includes("ps aux")) {
-        cb(null, "user 1234 0.0 0.0 123 456 ? S 00:00:00 language_server --csrf_token=fake-token", "");
-      } else if (cmd.includes("lsof") || cmd.includes("ss")) {
-        cb(null, "127.0.0.1:9090", "");
-      }
-      return {} as any;
-    });
-
-    const mockReq = {
-      on: vi.fn((event, handler) => {
-        if (event === "error") handler(new Error("Network Error"));
-      }),
-      write: vi.fn(),
-      end: vi.fn(),
-      destroy: vi.fn()
-    };
-
-    vi.mocked(request).mockReturnValue(mockReq as any);
-
-    const snap = await collectAntigravity();
-    expect(snap.source).toBe("antigravity");
-    expect(snap.error).toMatch(/Network Error|Failed to contact/);
+  it("tolerates surrounding blank lines and padding", () => {
+    const out = parseQuotaOutput("\n\n  " + SAMPLE + "  \n\n");
+    expect(out).toHaveLength(4);
   });
 
-  it("sorts subModels alphabetically by name", async () => {
-    // Mock exec for ps aux showing 'agy'
-    vi.mocked(exec).mockImplementation((cmd, opts, callback) => {
-      const cb = (typeof opts === "function" ? opts : callback) as any;
-      if (cmd.includes("ps aux")) {
-        cb(null, "user 53467 10.7 2.1 437723152 719792 s013 R+ 6:55PM 48:00.68 agy", "");
-      } else if (cmd.includes("lsof") || cmd.includes("ss")) {
-        cb(null, "127.0.0.1:61354", "");
-      } else {
-        cb(null, "", "");
-      }
-      return {} as any;
-    });
+  it("skips rows it cannot understand rather than failing the whole read", () => {
+    const out = parseQuotaOutput(
+      ["Fetching quota...", "garbage line", SAMPLE.split("\n")[0], "a\tb"].join("\n"),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].name).toBe("Gemini Models · Weekly");
+  });
 
-    // Mock https request with models in non-alphabetical order
-    const mockRes = {
-      statusCode: 200,
-      on: vi.fn((event, handler) => {
-        if (event === "data") {
-          handler(JSON.stringify({
-            userStatus: {
-              cascadeModelConfigData: {
-                clientModelConfigs: [
-                  { name: "zebra", quotaInfo: { remainingFraction: 1 } },
-                  { name: "apple", quotaInfo: { remainingFraction: 1 } },
-                  { name: "mango", quotaInfo: { remainingFraction: 1 } }
-                ]
-              }
-            }
-          }));
-        }
-        if (event === "end") {
-          handler();
-        }
-      })
-    };
+  it("returns nothing when the output carries no quota rows", () => {
+    expect(parseQuotaOutput("command not found")).toEqual([]);
+    expect(parseQuotaOutput("")).toEqual([]);
+  });
 
-    const mockReq = {
-      on: vi.fn(),
-      write: vi.fn(),
-      end: vi.fn((cb: any) => {
-        if (cb) cb();
-      }),
-      destroy: vi.fn()
-    };
+  it("keeps an unrecognised window label rather than silently dropping the row", () => {
+    const out = parseQuotaOutput("Gemini Models\tMonthly Limit Remaining\t80%\t2026-09-01T00:00:00Z");
+    expect(out).toHaveLength(1);
+    expect(out[0].name).toBe("Gemini Models · Monthly");
+  });
 
-    vi.mocked(request).mockImplementation((options, callback) => {
-      if (callback) callback(mockRes as any);
-      return mockReq as any;
-    });
-
-    const snap = await collectAntigravity();
-    expect(snap.source).toBe("antigravity");
-    expect(snap.subModels).toBeDefined();
-    const names = snap.subModels!.map(m => m.name);
-    expect(names).toEqual(["apple", "mango", "zebra"]);
+  it("sorts deterministically so history rows stay stable across runs", () => {
+    const shuffled = SAMPLE.split("\n").reverse().join("\n");
+    expect(parseQuotaOutput(shuffled).map((b) => b.name)).toEqual(
+      parseQuotaOutput(SAMPLE).map((b) => b.name),
+    );
   });
 });

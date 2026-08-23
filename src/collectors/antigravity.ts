@@ -1,199 +1,128 @@
 import { exec } from "node:child_process";
-import * as https from "node:https";
-import type { Collector, QuotaSnapshot, SubModelBucket } from "../types.js";
+import type { Collector, CollectorContext, QuotaSnapshot, SubModelBucket } from "../types.js";
 
-const GRPC_PATH = "/exa.language_server_pb.LanguageServerService/GetUserStatus";
+/**
+ * Antigravity quota comes from the `agy` CLI, not the local language server.
+ *
+ * The language server's GetUserStatus does expose a `quotaInfo.remainingFraction`
+ * per model, but every model in a group reports the same number because the
+ * limit is per *group*, not per model — and it only ever reflects the 5-hour
+ * window. The weekly limit, the one that actually runs out, is absent from it,
+ * and none of the 237 RPC methods exposes it.
+ *
+ * `agy -p "/quota"` prints both windows for both groups as tab-separated rows.
+ * Slash commands expand in print mode, so this costs no model tokens, and it
+ * works whether or not Antigravity.app is running — the RPC needed a live
+ * language server process to read a port and CSRF token from.
+ */
+const PRINT_TIMEOUT_S = 60;
+const EXEC_TIMEOUT_MS = 75_000;
 
-function runCommand(cmd: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    exec(cmd, { maxBuffer: 1024 * 1024 * 4 }, (err, stdout, stderr) => {
-      err ? reject(new Error(stderr || err.message)) : resolve(stdout);
+/** "Five Hour Limit Remaining" -> "5-hour". Unknown labels keep their first word. */
+function windowLabel(raw: string): string {
+  const t = raw.trim().toLowerCase();
+  if (t.startsWith("weekly")) return "Weekly";
+  if (t.startsWith("five hour") || t.startsWith("5 hour")) return "5-hour";
+  const first = raw.trim().split(/\s+/)[0];
+  return first ? first[0].toUpperCase() + first.slice(1) : raw.trim();
+}
+
+/** Weekly before 5-hour, then anything else, so a group's pair reads together. */
+function windowRank(label: string): number {
+  if (label === "Weekly") return 0;
+  if (label === "5-hour") return 1;
+  return 2;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Parse `agy -p "/quota"` output.
+ *
+ * Rows are `group \t window \t remaining% \t resetTime`. agy reports what is
+ * *left*; every other collector here reports what is *spent*, so this inverts.
+ * Unparseable lines are skipped rather than failing the read — the CLI prints
+ * progress chatter alongside the table.
+ */
+export function parseQuotaOutput(raw: string): SubModelBucket[] {
+  const out: Array<SubModelBucket & { _rank: number; _group: string }> = [];
+
+  for (const line of raw.split("\n")) {
+    const cells = line.split("\t").map((c) => c.trim());
+    if (cells.length < 3) continue;
+
+    const [group, rawWindow, rawPct, rawReset] = cells;
+    if (!group || !rawWindow) continue;
+
+    const m = /^([0-9]+(?:\.[0-9]+)?)\s*%$/.exec(rawPct ?? "");
+    if (!m) continue;
+    const remaining = Number(m[1]);
+    if (!Number.isFinite(remaining)) continue;
+
+    const label = windowLabel(rawWindow);
+    const used = round2(100 - remaining);
+    const reset = rawReset && !Number.isNaN(Date.parse(rawReset)) ? rawReset : undefined;
+
+    out.push({
+      name: `${group} · ${label}`,
+      used,
+      limit: 100,
+      pct: used,
+      resetsAt: reset,
+      _rank: windowRank(label),
+      _group: group,
     });
-  });
+  }
+
+  out.sort((a, b) => a._group.localeCompare(b._group) || a._rank - b._rank || a.name.localeCompare(b.name));
+  return out.map(({ _rank, _group, ...bucket }) => bucket);
 }
 
-async function detectServerInfo(): Promise<{
-  ports: number[];
-  csrfToken: string;
-} | null> {
-  let psOut: string;
-  try {
-    psOut = await runCommand("ps aux");
-  } catch {
-    return null;
-  }
-
-  let pid: string | null = null;
-  let csrfToken: string | null = null;
-
-  for (const line of psOut.split("\n")) {
-    const isLanguageServer = line.includes("language_server");
-    const isAgy = line.match(/\bagy\b/);
-    if (!isLanguageServer && !isAgy) continue;
-    if (line.includes("grep ") || line.includes("test-agy.ts") || line.includes("npx ")) continue;
-
-    const csrfMatch = line.match(/--csrf_token[=\s]+([A-Za-z0-9._/=+-]+)/);
-    const parts = line.trim().split(/\s+/);
-    const currentPid = parts[1];
-
-    if (isLanguageServer) {
-      if (!csrfMatch) continue;
-      pid = currentPid;
-      csrfToken = csrfMatch[1];
-      break;
-    } else if (isAgy) {
-      pid = currentPid;
-      csrfToken = csrfMatch ? csrfMatch[1] : "";
-      break;
-    }
-  }
-
-  if (!pid || csrfToken === null) return null;
-
-  const ports: number[] = [];
-  try {
-    const isMac = process.platform === "darwin";
-    if (isMac) {
-      const out = await runCommand(
-        `lsof -iTCP -sTCP:LISTEN -a -p ${pid} -n -P`,
-      );
-      const portRegex = /(?:localhost|127\.0\.0\.1|::1|\*):(\d+)/gi;
-      let m: RegExpExecArray | null;
-      while ((m = portRegex.exec(out)) !== null) {
-        ports.push(parseInt(m[1], 10));
-      }
-    } else {
-      const out = await runCommand(`ss -tlnp | grep "pid=${pid}"`);
-      const portRegex = /127\.0\.0\.1:(\d+)/g;
-      let m: RegExpExecArray | null;
-      while ((m = portRegex.exec(out)) !== null) {
-        ports.push(parseInt(m[1], 10));
-      }
-    }
-  } catch {
-    // Port discovery failed
-  }
-
-  return { ports, csrfToken };
-}
-
-function callGetUserStatus(port: number, csrfToken: string): Promise<any> {
+function runAgy(binary: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const body = "{}";
-    const options: https.RequestOptions = {
-      hostname: "127.0.0.1",
-      port,
-      path: GRPC_PATH,
-      method: "POST",
-      rejectUnauthorized: false,
-      headers: {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-        "x-codeium-csrf-token": csrfToken,
-      },
-      timeout: 6000,
-    };
-
-    const req = https.request(options, (res) => {
-      let raw = "";
-      res.on("data", (chunk) => (raw += chunk));
-      res.on("end", () => {
-        if (res.statusCode !== 200) {
-          reject(new Error(`HTTP ${res.statusCode}: ${raw.slice(0, 80)}`));
+    exec(
+      `${binary} -p "/quota" --print-timeout ${PRINT_TIMEOUT_S}s`,
+      { timeout: EXEC_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
+      (err, stdout, stderr) => {
+        // A non-zero exit with usable rows on stdout still beats reporting a
+        // failure, so the output is judged by the caller, not the exit code.
+        if (err && !stdout.trim()) {
+          reject(new Error((stderr || err.message).trim().slice(0, 200)));
           return;
         }
-        try {
-          resolve(JSON.parse(raw));
-        } catch (e: any) {
-          reject(new Error(`Parse error: ${e.message}`));
-        }
-      });
-    });
-    req.on("error", (err) => reject(new Error(err.message)));
-    req.on("timeout", () => {
-      req.destroy();
-      reject(new Error("Timed out"));
-    });
-    req.write(body);
-    req.end();
+        resolve(stdout);
+      },
+    );
   });
 }
 
-export async function collectAntigravity(): Promise<QuotaSnapshot> {
-  const now = new Date();
+export async function collectAntigravity(
+  ctx?: Pick<CollectorContext, "antigravityUsageBinary">,
+): Promise<QuotaSnapshot> {
+  const collectedAt = new Date().toISOString();
+  const binary = ctx?.antigravityUsageBinary || "agy";
 
   try {
-    const info = await detectServerInfo();
-    if (!info || info.ports.length === 0) {
+    const stdout = await runAgy(binary);
+    const subModels = parseQuotaOutput(stdout);
+    if (subModels.length === 0) {
       throw new Error(
-        "Antigravity language server not found or ports unavailable.",
+        `No quota rows in \`${binary} -p "/quota"\` output. Is the Antigravity CLI installed and signed in?`,
       );
     }
-
-    let json: any = null;
-    let lastError: Error | null = null;
-    for (const port of info.ports) {
-      try {
-        json = await callGetUserStatus(port, info.csrfToken);
-        if (json) break;
-      } catch (e) {
-        lastError = e as Error;
-      }
-    }
-
-    if (!json) {
-      throw (
-        lastError || new Error("Failed to contact language server on any port.")
-      );
-    }
-
-    const configs: any[] =
-      json?.userStatus?.cascadeModelConfigData?.clientModelConfigs ?? [];
-    const subModels: SubModelBucket[] = [];
-    const seen = new Set<string>();
-
-    for (const c of configs) {
-      const label = c.label ?? c.name ?? "Unknown";
-      if (seen.has(label)) continue;
-      seen.add(label);
-
-      const qi = c.quotaInfo ?? {};
-      // resetTime present + no remainingFraction = exhausted quota (100% used)
-      // no quotaInfo at all = unlimited/unknown = 0% used
-      const remaining: number =
-        "remainingFraction" in qi
-          ? qi.remainingFraction
-          : "resetTime" in qi
-            ? 0
-            : 1;
-      const pct = Math.round((1 - remaining) * 100);
-
-      subModels.push({
-        name: label,
-        used: pct,
-        limit: 100,
-        pct,
-        resetsAt: qi.resetTime,
-      });
-    }
-
-    subModels.sort((a, b) => a.name.localeCompare(b.name));
-
+    return { source: "antigravity", collectedAt, subModels };
+  } catch (e) {
     return {
       source: "antigravity",
-      collectedAt: now.toISOString(),
-      subModels,
-    };
-  } catch (e: any) {
-    return {
-      source: "antigravity",
-      collectedAt: now.toISOString(),
-      error: e.message,
+      collectedAt,
+      error: (e as Error).message,
     };
   }
 }
 
 export const antigravityCollector: Collector = {
   source: "antigravity",
-  collect: () => collectAntigravity(),
+  collect: (ctx) => collectAntigravity(ctx),
 };
