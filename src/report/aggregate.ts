@@ -155,7 +155,10 @@ export function compressPoints(
 function isCycleBoundary(prev: SeriesPoint, next: SeriesPoint): boolean {
   if (prev.resetsAt) {
     const reset = Date.parse(prev.resetsAt);
-    if (!Number.isNaN(reset) && next.t >= reset) return true;
+    // A *transition* across the announced instant, not a standing comparison:
+    // a source that keeps reporting an already-past reset would otherwise make
+    // every subsequent sample its own cycle.
+    if (!Number.isNaN(reset) && prev.t < reset && next.t >= reset) return true;
   }
   const drop = prev.pct - next.pct;
   return drop >= Math.max(MIN_RESET_DROP, prev.pct * 0.5);

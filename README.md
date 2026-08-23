@@ -78,9 +78,59 @@ Alternatively, you can manually configure your `~/.claude/config.json` to regist
     "antigravity"
   ],
   "playwrightTimeoutMs": 8000,
-  "antigravityUsageBinary": "agy"
+  "antigravityUsageBinary": "agy",
+  "historyEnabled": true,
+  "historyRetentionDays": 90
 }
 ```
+
+### Usage History
+
+Every real collection is appended to a month-sharded log at
+`~/.config/quotacheck-mcp/history/YYYY-MM.jsonl`, one `QuotaSnapshot` per line.
+Cache hits are not recorded, and failures are recorded with their `error`
+intact — a flat line in a report must be distinguishable from a collector that
+was down. Set `historyEnabled` to `false` to turn recording off.
+
+Shards whose entire month falls outside `historyRetentionDays` are deleted on
+write. A partially-expired shard is kept whole, so up to ~30 extra days may sit
+on disk; readers filter by exact cutoff, so query results are unaffected. This
+keeps appends O(1) instead of rewriting a multi-megabyte file every few minutes.
+
+At four sources polling every five minutes the log grows roughly 1,150 lines
+(~500 KB) per day.
+
+### Usage Reports
+
+Render the recorded history as a self-contained HTML page:
+
+```bash
+npm run report                                     # last 7 days
+npm run report -- --days 30
+npm run report -- --days 7 --sources claude-code,gemini-cli
+npm run report -- --days 30 --out ~/Desktop/quota.html
+```
+
+Output defaults to `~/.config/quotacheck-mcp/reports/quota-<days>d.html`. The
+page needs no network access beyond Google Fonts, and works both opened directly
+from disk and published as an artifact.
+
+Per quota bucket it shows a step chart (a reading holds until the next one — the
+line never interpolates between samples), hairline markers at each observed
+reset, gray bands over failed-collection windows, a per-cycle summary table
+(start, end, peak, final usage, remaining, reset time) and a refresh log. A
+bucket untouched for the whole window collapses to a single row instead of an
+empty plot.
+
+A quota cycle boundary is detected two ways: time crossing the reset instant the
+previous sample announced, or usage collapsing. Reset times are not compared for
+equality — Gemini reports a *rolling* window that drifts forward on every poll,
+so equality would manufacture a cycle per refresh.
+
+`--max-points` (default 600) caps the plotted points per series. Samples are
+first collapsed by run — usage is a step function, so identical consecutive
+readings carry no information — and only then, if still too dense, bucketed by
+time keeping each bucket's peak.
 
 ### Authentication for Web Collectors
 
@@ -161,6 +211,7 @@ The following commands are available from the root of the project:
 | `npm run test` | Runs the Vitest unit tests |
 | `npm run test:watch` | Runs tests in interactive watch mode |
 | `npm run smoke` | Runs a live end-to-end collector query against active configurations |
+| `npm run report` | Renders recorded history as a self-contained HTML report |
 | `npm run login gemini-web` | Logs in and saves authenticated session profiles for Playwright |
 
 ---

@@ -148,6 +148,21 @@ describe("cycle detection", () => {
     expect(r.sources[0].series[0].cycles).toHaveLength(1);
   });
 
+  it("fires a stale reset instant once, not on every later sample", () => {
+    // A source can keep announcing a reset time that has already passed. The
+    // crossing must be a transition, not a standing condition, or every sample
+    // after it reads as its own cycle.
+    const stale = at(30 * MIN);
+    const r = report([
+      cc(0, 10, stale),
+      cc(HOUR, 12, stale),
+      cc(2 * HOUR, 14, stale),
+      cc(3 * HOUR, 16, stale),
+      cc(4 * HOUR, 18, stale),
+    ]);
+    expect(r.sources[0].series[0].cycles).toHaveLength(2);
+  });
+
   it("tolerates a missing reset time and still splits on the drop", () => {
     const r = report([cc(0, 50), cc(HOUR, 60), cc(2 * HOUR, 1)]);
     expect(r.sources[0].series[0].cycles).toHaveLength(2);
