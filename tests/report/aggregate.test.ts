@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { buildReport, compressPoints } from "../../src/report/aggregate.js";
+import {
+  buildReport,
+  compressPoints,
+  collapseRuns,
+  capPoints,
+} from "../../src/report/aggregate.js";
 import type { QuotaSnapshot } from "../../src/types.js";
 
 const T0 = Date.parse("2026-08-01T00:00:00.000Z");
@@ -230,5 +235,99 @@ describe("compressPoints", () => {
 
   it("handles empty input", () => {
     expect(compressPoints([], 600)).toEqual([]);
+  });
+});
+
+describe("collapseRuns", () => {
+  const pt = (t: number, pct: number, resetsAt?: string) => ({
+    t,
+    used: pct,
+    limit: 100,
+    pct,
+    remaining: 100 - pct,
+    resetsAt,
+  });
+
+  it("is lossless: every transition survives, however dense the input", () => {
+    // 5000 samples that change on every step. A cap would throw detail away;
+    // run-collapse must not, because the page zooms into this data later.
+    const dense = Array.from({ length: 5000 }, (_, i) => pt(i, i % 40));
+    expect(collapseRuns(dense)).toHaveLength(5000);
+  });
+
+  it("collapses a flat run to its two endpoints", () => {
+    expect(collapseRuns([pt(1, 5), pt(2, 5), pt(3, 5), pt(4, 5)]).map((p) => p.t)).toEqual([1, 4]);
+  });
+
+  it("treats a change in reset time as a change worth keeping", () => {
+    const out = collapseRuns([
+      pt(1, 0, "2026-08-01T00:00:00.000Z"),
+      pt(2, 0, "2026-08-01T00:00:00.000Z"),
+      pt(3, 0, "2026-08-02T00:00:00.000Z"),
+    ]);
+    expect(out.map((p) => p.t)).toEqual([1, 2, 3]);
+  });
+
+  it("keeps a lone spike", () => {
+    expect(collapseRuns([pt(1, 0), pt(2, 50), pt(3, 0)]).map((p) => p.pct)).toEqual([0, 50, 0]);
+  });
+
+  it("handles empty and short input", () => {
+    expect(collapseRuns([])).toEqual([]);
+    const two = [pt(1, 1), pt(2, 2)];
+    expect(collapseRuns(two)).toEqual(two);
+  });
+});
+
+describe("capPoints", () => {
+  const pt = (t: number, pct: number) => ({
+    t,
+    used: pct,
+    limit: 100,
+    pct,
+    remaining: 100 - pct,
+    resetsAt: undefined,
+  });
+
+  it("passes through anything already under the cap", () => {
+    const pts = [pt(1, 1), pt(2, 2), pt(3, 3)];
+    expect(capPoints(pts, 600)).toEqual(pts);
+  });
+
+  it("caps the count while keeping both endpoints and the peak", () => {
+    const dense = Array.from({ length: 5000 }, (_, i) => pt(i, i === 3210 ? 99 : i % 40));
+    const out = capPoints(dense, 100);
+    expect(out.length).toBeLessThanOrEqual(100);
+    expect(Math.max(...out.map((p) => p.pct))).toBe(99);
+    expect(out[0].t).toBe(0);
+    expect(out[out.length - 1].t).toBe(4999);
+  });
+
+  it("never returns fewer than the endpoints for a tiny cap", () => {
+    const dense = Array.from({ length: 100 }, (_, i) => pt(i, i));
+    const out = capPoints(dense, 1);
+    expect(out.length).toBeGreaterThanOrEqual(2);
+    expect(out[0].t).toBe(0);
+    expect(out[out.length - 1].t).toBe(99);
+  });
+});
+
+describe("buildReport embedding", () => {
+  it("embeds uncapped points so the page can zoom without losing detail", () => {
+    const dense: QuotaSnapshot[] = Array.from({ length: 2000 }, (_, i) => ({
+      source: "claude-code",
+      collectedAt: new Date(T0 + i * MIN).toISOString(),
+      session: { used: i % 90, limit: 100, pct: i % 90 },
+    }));
+    const r = buildReport(dense, {
+      since: new Date(T0),
+      until: new Date(T0 + 5000 * MIN),
+      days: 30,
+      maxPoints: 50,
+      generatedAt: new Date(T0),
+    });
+    // maxPoints is a *draw-time* budget handed to the page, not applied here.
+    expect(r.sources[0].series[0].points.length).toBeGreaterThan(1000);
+    expect(r.maxPoints).toBe(50);
   });
 });

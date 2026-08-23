@@ -57,6 +57,8 @@ export interface ReportData {
   until: number;
   days: number;
   totalEvents: number;
+  /** Draw-time point budget the page applies per visible range. */
+  maxPoints: number;
   sources: SourceReport[];
 }
 
@@ -94,20 +96,18 @@ function valueKey(p: SeriesPoint): string {
 }
 
 /**
- * Thin a series without losing its shape.
+ * Drop consecutive identical readings. **Lossless.**
  *
  * Quota usage is a step function that only moves when you spend tokens, so a
- * day of five-minute polls is mostly identical samples. Runs collapse to their
- * two endpoints, which keeps every change point *and* the flat segment leading
- * into it. Only if that is still too dense does a hard cap kick in, bucketing
- * by time and keeping each bucket's peak so spikes survive.
+ * day of five-minute polls is mostly repeats. Collapsing a run to its two
+ * endpoints keeps every change point *and* the flat segment leading into it,
+ * so the curve is bit-for-bit the same shape with a fraction of the samples.
+ *
+ * This is what gets embedded in the report. Capping before embedding would
+ * throw away detail the reader can never get back by zooming in.
  */
-export function compressPoints(
-  points: SeriesPoint[],
-  maxPoints: number = DEFAULT_MAX_POINTS,
-): SeriesPoint[] {
+export function collapseRuns(points: SeriesPoint[]): SeriesPoint[] {
   if (points.length <= 2) return points;
-
   const kept: SeriesPoint[] = [];
   for (let i = 0; i < points.length; i++) {
     const isEdge = i === 0 || i === points.length - 1;
@@ -117,14 +117,25 @@ export function compressPoints(
       valueKey(points[i]) !== valueKey(points[i + 1]);
     if (isEdge || changed || changesNext) kept.push(points[i]);
   }
+  return kept;
+}
 
+/**
+ * Thin a series to a drawing budget. **Lossy** — a draw-time concern only.
+ *
+ * Buckets by time and keeps each bucket's peak, so spikes survive the cull;
+ * both endpoints are reserved so the visible range never appears clipped.
+ */
+export function capPoints(
+  points: SeriesPoint[],
+  maxPoints: number = DEFAULT_MAX_POINTS,
+): SeriesPoint[] {
   const cap = Math.max(3, maxPoints);
-  if (kept.length <= cap) return kept;
+  if (points.length <= cap) return points;
 
-  // Reserve the two endpoints so the window's true extent is never clipped.
-  const first = kept[0];
-  const last = kept[kept.length - 1];
-  const interior = kept.slice(1, -1);
+  const first = points[0];
+  const last = points[points.length - 1];
+  const interior = points.slice(1, -1);
   const buckets = cap - 2;
   const span = last.t - first.t || 1;
 
@@ -136,6 +147,14 @@ export function compressPoints(
   }
 
   return [first, ...[...picks.values()].sort((a, b) => a.t - b.t), last];
+}
+
+/** Both stages, for callers that want a one-shot thinning. */
+export function compressPoints(
+  points: SeriesPoint[],
+  maxPoints: number = DEFAULT_MAX_POINTS,
+): SeriesPoint[] {
+  return capPoints(collapseRuns(points), maxPoints);
 }
 
 /**
@@ -262,7 +281,8 @@ export function buildReport(
 
     const series: Series[] = [...raw.entries()]
       .map(([key, entry]) => {
-        const points = compressPoints(entry.points, maxPoints);
+        // Lossless only: the range picker needs full detail to zoom into.
+        const points = collapseRuns(entry.points);
         return {
           key: `${source}:${key}`,
           source,
@@ -298,6 +318,7 @@ export function buildReport(
     until: opts.until.getTime(),
     days: opts.days,
     totalEvents: ordered.length,
+    maxPoints,
     sources,
   };
 }

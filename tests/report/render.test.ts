@@ -6,17 +6,23 @@ import type { QuotaSnapshot } from "../../src/types.js";
 const T0 = Date.parse("2026-08-01T00:00:00.000Z");
 const HOUR = 3_600_000;
 
-function build(snaps: QuotaSnapshot[]) {
-  return buildReport(snaps, {
-    since: new Date(T0),
-    until: new Date(T0 + 500 * HOUR),
-    days: 7,
-    generatedAt: new Date(T0 + 500 * HOUR),
-  });
+function html(snaps: QuotaSnapshot[]) {
+  return renderReport(
+    buildReport(snaps, {
+      since: new Date(T0),
+      until: new Date(T0 + 500 * HOUR),
+      days: 7,
+      generatedAt: new Date(T0 + 500 * HOUR),
+    }),
+  );
 }
 
-function html(snaps: QuotaSnapshot[]) {
-  return renderReport(build(snaps));
+/** The page renders from this; asserting on it beats asserting on markup. */
+function payloadOf(out: string): any {
+  const open = '<script type="application/json" id="qc-data">';
+  const start = out.indexOf(open) + open.length;
+  const end = out.indexOf("</script>", start);
+  return JSON.parse(out.slice(start, end));
 }
 
 const sample: QuotaSnapshot[] = [
@@ -37,8 +43,6 @@ const sample: QuotaSnapshot[] = [
 describe("renderReport", () => {
   it("emits a page fragment with no document skeleton", () => {
     const out = html(sample);
-    // Artifact wraps the file in its own skeleton; a browser opening the file
-    // directly builds one too. Emitting our own would nest them.
     expect(out).not.toMatch(/<!doctype/i);
     expect(out).not.toMatch(/<html[\s>]/i);
     expect(out).not.toMatch(/<body[\s>]/i);
@@ -46,63 +50,7 @@ describe("renderReport", () => {
   });
 
   it("declares utf-8 within the first 1024 bytes", () => {
-    // The page is full of Chinese labels; without this the file mojibakes when
-    // opened directly, and the browser only scans the head of the stream.
-    const out = html(sample);
-    expect(out.slice(0, 1024)).toContain('<meta charset="utf-8">');
-  });
-
-  it("renders a card per quota bucket", () => {
-    const out = html(sample);
-    expect(out).toContain("claude-code");
-    expect(out.match(/class="bucket"/g) ?? []).toHaveLength(2);
-  });
-
-  it("escapes hostile text coming from collector output", () => {
-    const out = html([
-      {
-        source: "antigravity",
-        collectedAt: new Date(T0).toISOString(),
-        subModels: [
-          { name: '<img src=x onerror="alert(1)">', used: 1, limit: 100, pct: 1 },
-        ],
-      },
-      {
-        source: "gemini-web",
-        collectedAt: new Date(T0).toISOString(),
-        error: "</script><script>alert(2)</script>",
-      },
-    ]);
-    expect(out).not.toContain("<img src=x");
-    expect(out).not.toContain("<script>alert(2)");
-    expect(out).not.toContain("</script><script>");
-    expect(out).toContain("&lt;img src=x");
-  });
-
-  it("gives a never-used bucket a compact row instead of an empty chart, and sorts it last", () => {
-    const out = html([
-      {
-        source: "gemini-web",
-        collectedAt: new Date(T0).toISOString(),
-        subModels: [
-          { name: "AAA Idle", used: 0, limit: 100, pct: 0 },
-          { name: "ZZZ Busy", used: 30, limit: 100, pct: 30 },
-        ],
-      },
-      {
-        source: "gemini-web",
-        collectedAt: new Date(T0 + HOUR).toISOString(),
-        subModels: [
-          { name: "AAA Idle", used: 0, limit: 100, pct: 0 },
-          { name: "ZZZ Busy", used: 55, limit: 100, pct: 55 },
-        ],
-      },
-    ]);
-    expect(out.match(/class="bucket"/g) ?? []).toHaveLength(2);
-    expect(out.match(/<svg/g) ?? []).toHaveLength(1);
-    // The bucket with something to show leads, despite sorting after alphabetically.
-    expect(out.indexOf("ZZZ Busy")).toBeLessThan(out.indexOf("AAA Idle"));
-    expect(out).toMatch(/未使用/);
+    expect(html(sample).slice(0, 1024)).toContain('<meta charset="utf-8">');
   });
 
   it("contacts no host other than Google Fonts", () => {
@@ -111,36 +59,82 @@ describe("renderReport", () => {
     expect(hosts.every((h) => h.endsWith("fonts.googleapis.com") || h.endsWith("fonts.gstatic.com"))).toBe(true);
   });
 
-  it("states the cap instead of silently truncating a long refresh log", () => {
-    const many: QuotaSnapshot[] = Array.from({ length: MAX_LOG_ROWS + 40 }, (_, i) => ({
-      source: "claude-code",
-      collectedAt: new Date(T0 + i * HOUR).toISOString(),
-      session: { used: i % 90, limit: 100, pct: i % 90 },
-    }));
-    const out = renderReport(
-      buildReport(many, {
-        since: new Date(T0),
-        until: new Date(T0 + 10_000 * HOUR),
-        days: 90,
-        maxPoints: 10_000,
-        generatedAt: new Date(T0),
-      }),
-    );
-    expect(out).toContain(String(MAX_LOG_ROWS));
-    expect(out).toMatch(/最近/);
-  });
-
-  it("renders an empty state rather than a blank page", () => {
-    const out = html([]);
-    expect(out).toMatch(/还没有/);
-    expect(out).not.toContain('class="bucket"');
-  });
-
   it("defines every colour token on bare :root, not only inside a theme block", () => {
     const out = html(sample);
     const root = out.slice(out.indexOf(":root {"), out.indexOf("@media"));
     for (const token of ["--surface-1", "--text-primary", "--series-1", "--page"]) {
       expect(root).toContain(token);
     }
+  });
+
+  it("tells the reader when JavaScript is required", () => {
+    expect(html(sample)).toContain("<noscript>");
+  });
+
+  it("embeds one series per quota bucket with its full point list", () => {
+    const p = payloadOf(html(sample));
+    expect(p.sources).toHaveLength(1);
+    expect(p.sources[0].series.map((s: any) => s.kind)).toEqual(["session", "weekly"]);
+    expect(p.sources[0].series[0].pts).toHaveLength(2);
+  });
+
+  it("embeds points uncapped so the range picker can zoom to full detail", () => {
+    const many: QuotaSnapshot[] = Array.from({ length: 1500 }, (_, i) => ({
+      source: "claude-code",
+      collectedAt: new Date(T0 + i * 60_000).toISOString(),
+      session: { used: i % 90, limit: 100, pct: i % 90 },
+    }));
+    const out = renderReport(
+      buildReport(many, {
+        since: new Date(T0),
+        until: new Date(T0 + 500 * HOUR),
+        days: 30,
+        maxPoints: 50,
+        generatedAt: new Date(T0 + 500 * HOUR),
+      }),
+    );
+    const p = payloadOf(out);
+    expect(p.sources[0].series[0].pts.length).toBeGreaterThan(1000);
+    // The cap travels to the page as a drawing budget instead.
+    expect(p.maxPoints).toBe(50);
+  });
+
+  it("hands the page its log cap rather than truncating server-side", () => {
+    expect(payloadOf(html(sample)).logCap).toBe(MAX_LOG_ROWS);
+  });
+
+  it("embeds cycles without their point arrays", () => {
+    const p = payloadOf(html(sample));
+    const cycles = p.sources[0].series[0].cycles;
+    expect(cycles.length).toBeGreaterThan(0);
+    // Arrays of summary fields — a nested point list would double the file.
+    expect(Array.isArray(cycles[0])).toBe(true);
+    expect(JSON.stringify(cycles)).not.toContain("remaining");
+  });
+
+  it("cannot be broken out of by hostile collector output", () => {
+    const nasty = '</script><script>alert(1)</script>';
+    const out = html([
+      {
+        source: "antigravity",
+        collectedAt: new Date(T0).toISOString(),
+        subModels: [{ name: nasty, used: 1, limit: 100, pct: 1 }],
+      },
+      { source: "gemini-web", collectedAt: new Date(T0).toISOString(), error: nasty },
+    ]);
+    // No raw angle brackets survive into the document...
+    expect(out).not.toContain("<script>alert(1)");
+    expect(out).not.toContain("</script><script>");
+    // ...yet the value round-trips intact for the page to set via textContent.
+    const p = payloadOf(out);
+    const names = p.sources.flatMap((s: any) => s.series.map((x: any) => x.label));
+    expect(names).toContain(nasty);
+    expect(p.sources.find((s: any) => s.id === "gemini-web").outages[0][2]).toBe(nasty);
+  });
+
+  it("renders an empty state rather than a blank page", () => {
+    const out = html([]);
+    expect(out).toMatch(/还没有/);
+    expect(out).not.toContain('id="sources"');
   });
 });

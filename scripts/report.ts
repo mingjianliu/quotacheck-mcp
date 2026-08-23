@@ -21,7 +21,8 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-const days = Number(flag("days", "7"));
+// Bounds what the page's range picker can reach, so default generously.
+const days = Number(flag("days", "30"));
 if (!Number.isFinite(days) || days <= 0) fail("--days must be a positive number");
 
 const maxPoints = Number(flag("max-points", String(DEFAULT_MAX_POINTS)));
