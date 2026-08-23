@@ -13,7 +13,6 @@ import type {
 const ctx: CollectorContext = {
   chromeProfilePath: "/tmp/profile",
   playwrightTimeoutMs: 1000,
-  antigravityUsageBinary: "antigravity-usage",
   homeDir: "/tmp",
 };
 

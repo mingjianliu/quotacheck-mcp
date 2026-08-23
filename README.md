@@ -76,7 +76,6 @@ Alternatively, you can manually configure your `~/.claude/config.json` to regist
     "antigravity"
   ],
   "playwrightTimeoutMs": 8000,
-  "antigravityUsageBinary": "agy",
   "historyEnabled": true,
   "historyRetentionDays": 90
 }

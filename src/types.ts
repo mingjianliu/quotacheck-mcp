@@ -38,7 +38,6 @@ export interface CollectorContext {
   chromeProfilePath: string;
   chromeExecutablePath?: string;
   playwrightTimeoutMs: number;
-  antigravityUsageBinary: string;
   homeDir: string;
   /** Defaults to true when unset. */
   historyEnabled?: boolean;

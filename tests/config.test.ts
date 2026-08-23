@@ -23,7 +23,8 @@ describe("loadConfig", () => {
       "antigravity",
     ]);
     expect(cfg.playwrightTimeoutMs).toBe(8000);
-    expect(cfg.antigravityUsageBinary).toBe("agy");
+    expect(cfg.historyEnabled).toBe(true);
+    expect(cfg.historyRetentionDays).toBe(90);
     expect(cfg.chromeProfilePath).toContain("Chrome");
   });
 
@@ -40,7 +41,8 @@ describe("loadConfig", () => {
     const cfg = loadConfig({ homeDir: tmp });
     expect(cfg.playwrightTimeoutMs).toBe(15000);
     expect(cfg.enabledSources).toEqual(["claude-code"]);
-    expect(cfg.antigravityUsageBinary).toBe("agy");
+    // A key the file didn't mention still gets its default.
+    expect(cfg.historyRetentionDays).toBe(90);
   });
 
   it("throws on invalid JSON", () => {

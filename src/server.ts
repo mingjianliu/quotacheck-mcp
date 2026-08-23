@@ -35,7 +35,6 @@ async function main() {
     chromeProfilePath: cfg.chromeProfilePath,
     chromeExecutablePath: cfg.chromeExecutablePath,
     playwrightTimeoutMs: cfg.playwrightTimeoutMs,
-    antigravityUsageBinary: cfg.antigravityUsageBinary,
     homeDir: homedir(),
     historyEnabled: cfg.historyEnabled,
     historyRetentionDays: cfg.historyRetentionDays,
