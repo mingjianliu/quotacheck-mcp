@@ -1,5 +1,7 @@
 # quotacheck-mcp Implementation Plan
 
+> **Status note (2026-08-23):** the `gemini-cli` collector described below was removed from the codebase (commit `b88a5cb`) — the Cloud Code quota endpoint it depended on is permanently gone. Everything here is retained as a record of the original design, not as a description of the current system.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a Node.js MCP server that, on demand, reports the user's current quota across Claude Code, Gemini CLI, Gemini web, claude.ai design, and Antigravity.

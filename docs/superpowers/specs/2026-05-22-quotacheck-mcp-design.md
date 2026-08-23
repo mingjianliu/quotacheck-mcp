@@ -1,5 +1,7 @@
 # quotacheck-mcp — Design
 
+> **Status note (2026-08-23):** the `gemini-cli` collector described below was removed from the codebase (commit `b88a5cb`) — the Cloud Code quota endpoint it depended on is permanently gone. Everything here is retained as a record of the original design, not as a description of the current system.
+
 **Date:** 2026-05-22
 **Author:** mingjianliu (with Claude Code)
 **Status:** Draft — pending implementation
