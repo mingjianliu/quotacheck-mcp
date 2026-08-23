@@ -1,7 +1,7 @@
 {
   "name": "quotacheck-mcp",
   "version": "0.1.0",
-  "description": "MCP server reporting current quota across Claude Code, Gemini CLI, Gemini web, claude.ai design, and Antigravity",
+  "description": "MCP server reporting current quota across Claude Code, Gemini web, and Antigravity",
   "type": "module",
   "bin": {
     "quotacheck-mcp": "dist/server.js"
