@@ -57,6 +57,7 @@ function payload(data: ReportData) {
           key: s.key,
           kind: s.kind,
           label: s.label,
+          group: s.group,
           pts: s.points.map((p) => [p.t, p.pct, p.used, p.remaining, p.resetsAt ?? null]),
           cycles: s.cycles.map((c) => [
             c.startsAt,
@@ -220,9 +221,9 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--tint); pad
   background: var(--series-1); color: #fff; border: 0; border-radius: 6px; padding: 5px 14px;
 }
 
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
 .tile { background: var(--surface-1); border: 1px solid var(--hairline); border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 2px; }
-.tile-label { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
+.tile-label { font-size: 12px; color: var(--text-secondary); font-weight: 500; text-wrap: balance; }
 .tile-value { font-size: 34px; line-height: 1.1; font-weight: 600; letter-spacing: -0.02em; }
 .tile-value .unit { font-size: 16px; color: var(--text-muted); margin-left: 1px; }
 .tile-sub { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; }
@@ -671,17 +672,55 @@ ${body}
     return card;
   }
 
-  function buildTile(src) {
-    var a = state.from, b = state.to;
-    var best = null;
+  /** "Gemini Models · Weekly" inside group "Gemini Models" reads as "Weekly". */
+  function windowOf(s) {
+    if (s.group && s.label.indexOf(s.group + " · ") === 0) {
+      return s.label.slice(s.group.length + 3);
+    }
+    return seriesTitle(s);
+  }
+
+  /**
+   * One tile per shared-limit group, falling back to one per source.
+   *
+   * Once a source reports groups, the overview is those groups only: legacy
+   * ungrouped buckets still recorded in history stay visible as cards below,
+   * but an extra catch-all tile beside the real groups would just be noise.
+   */
+  function tilesFor(src) {
+    var order = [], byGroup = {};
     src.series.forEach(function (s) {
+      var g = s.group || "";
+      if (!(g in byGroup)) { byGroup[g] = []; order.push(g); }
+      byGroup[g].push(s);
+    });
+    var grouped = order.filter(function (g) { return g !== ""; });
+    if (grouped.length) order = grouped.sort();
+    return order.map(function (g) { return buildTile(src, byGroup[g], g); });
+  }
+
+  function buildTile(src, series, group) {
+    var a = state.from, b = state.to;
+    // Headline the bucket under most pressure. On a tie — both windows at 0% —
+    // prefer the one whose reset is furthest out, so a group leads with its
+    // weekly rather than its 5-hour window and the tiles stay comparable.
+    var best = null;
+    function resetAt(p) {
+      var t = p[4] ? Date.parse(p[4]) : NaN;
+      return isNaN(t) ? -Infinity : t;
+    }
+    series.forEach(function (s) {
       var pts = inRange(s.pts, a, b);
       if (!pts.length) return;
       var last = pts[pts.length - 1];
-      if (!best || last[1] > best.last[1]) best = { s: s, last: last };
+      if (!best) { best = { s: s, last: last }; return; }
+      if (last[1] > best.last[1]) { best = { s: s, last: last }; return; }
+      if (last[1] === best.last[1] && resetAt(last) > resetAt(best.last)) {
+        best = { s: s, last: last };
+      }
     });
     var tile = el("div", "tile");
-    tile.appendChild(el("p", "tile-label", src.label));
+    tile.appendChild(el("p", "tile-label", group ? src.label + " · " + group : src.label));
     if (!best) {
       tile.appendChild(el("p", "tile-value soft", "无数据"));
       tile.appendChild(el("p", "tile-sub mono soft", src.errorCount + " 次失败"));
@@ -693,7 +732,7 @@ ${body}
     tile.appendChild(val);
     var sub = el("p", "tile-sub");
     sub.appendChild(el("span", "dot " + t.cls));
-    sub.appendChild(document.createTextNode(t.label + " · " + seriesTitle(best.s)));
+    sub.appendChild(document.createTextNode(t.label + " · " + windowOf(best.s)));
     tile.appendChild(sub);
     var rangeIsCurrent = b >= D.generatedAt - 5 * MIN;
     tile.appendChild(el("p", "tile-sub mono soft",
@@ -712,7 +751,7 @@ ${body}
     sourcesBox.textContent = "";
     D.sources.forEach(function (src) {
       if (state.hidden[src.id]) return;
-      tilesBox.appendChild(buildTile(src));
+      tilesFor(src).forEach(function (t) { tilesBox.appendChild(t); });
 
       var sec = el("section", "source");
       sec.setAttribute("data-source", src.id);

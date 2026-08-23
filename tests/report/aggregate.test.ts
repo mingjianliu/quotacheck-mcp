@@ -80,6 +80,27 @@ describe("buildReport", () => {
     expect(series.find((s) => s.label === "Gemini 3 Pro")!.points).toHaveLength(2);
   });
 
+  it("carries a sub-model's group onto its series", () => {
+    const r = report([
+      {
+        source: "antigravity",
+        collectedAt: at(0),
+        subModels: [
+          { name: "G · Weekly", group: "G", used: 40, limit: 100, pct: 40 },
+          { name: "C · Weekly", group: "C", used: 1, limit: 100, pct: 1 },
+        ],
+      },
+    ]);
+    const byLabel = Object.fromEntries(r.sources[0].series.map((s) => [s.label, s.group]));
+    expect(byLabel["G · Weekly"]).toBe("G");
+    expect(byLabel["C · Weekly"]).toBe("C");
+  });
+
+  it("leaves group undefined for sources that do not group", () => {
+    const r = report([cc(0, 10)]);
+    expect(r.sources[0].series[0].group).toBeUndefined();
+  });
+
   it("computes remaining from limit and used", () => {
     const r = report([cc(0, 42)]);
     expect(r.sources[0].series[0].points[0].remaining).toBe(58);

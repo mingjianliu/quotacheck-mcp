@@ -18,6 +18,11 @@ export interface Bucket {
 
 export interface SubModelBucket extends Bucket {
   name: string;
+  /**
+   * Buckets that share one underlying limit, e.g. Antigravity meters Gemini
+   * models and Claude/GPT models as two groups. Drives the overview tiles.
+   */
+  group?: string;
 }
 
 export interface QuotaSnapshot {

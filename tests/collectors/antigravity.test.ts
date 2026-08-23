@@ -36,6 +36,20 @@ describe("parseQuotaOutput", () => {
     expect(by("Gemini Models · 5-hour").resetsAt).toBe("2026-08-23T10:47:25Z");
   });
 
+  it("exposes the group explicitly, not only baked into the name", () => {
+    // The renderer groups overview tiles by this. Re-splitting the display name
+    // on a separator would be a stringly-typed round-trip of what we already know.
+    const out = parseQuotaOutput(SAMPLE);
+    expect(out.map((b) => b.group)).toEqual([
+      "Claude and GPT models",
+      "Claude and GPT models",
+      "Gemini Models",
+      "Gemini Models",
+    ]);
+    // Names stay stable — they identify series in the recorded history.
+    expect(out[2].name).toBe("Gemini Models · Weekly");
+  });
+
   it("keeps fractional percentages", () => {
     const out = parseQuotaOutput("Gemini Models\tWeekly Limit Remaining\t56.34%\t2026-08-26T01:17:29Z");
     expect(out[0].pct).toBeCloseTo(43.66, 2);

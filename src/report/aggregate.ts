@@ -29,6 +29,8 @@ export interface Series {
   source: SourceId;
   kind: SeriesKind;
   label: string;
+  /** Set when the source meters this bucket as part of a shared-limit group. */
+  group?: string;
   limit: number;
   points: SeriesPoint[];
   cycles: Cycle[];
@@ -240,15 +242,26 @@ export function buildReport(
   const sources: SourceReport[] = [];
 
   for (const [source, events] of bySource) {
-    const raw = new Map<string, { kind: SeriesKind; label: string; points: SeriesPoint[] }>();
+    const raw = new Map<
+      string,
+      { kind: SeriesKind; label: string; group?: string; points: SeriesPoint[] }
+    >();
     const outages: Outage[] = [];
     let errorCount = 0;
     let lastCollectedAt: number | undefined;
     let prevError: string | undefined;
 
-    const push = (kind: SeriesKind, label: string, t: number, b: Bucket) => {
+    const push = (
+      kind: SeriesKind,
+      label: string,
+      t: number,
+      b: Bucket,
+      group?: string,
+    ) => {
       const key = `${kind}:${label}`;
-      const entry = raw.get(key) ?? { kind, label, points: [] };
+      const entry = raw.get(key) ?? { kind, label, group, points: [] };
+      // A later reading may carry the group where an earlier one did not.
+      if (group && !entry.group) entry.group = group;
       entry.points.push(toPoint(t, b));
       raw.set(key, entry);
     };
@@ -276,7 +289,7 @@ export function buildReport(
 
       if (e.session) push("session", "Session", t, e.session);
       if (e.weekly) push("weekly", "Weekly", t, e.weekly);
-      for (const sm of e.subModels ?? []) push("submodel", sm.name, t, sm);
+      for (const sm of e.subModels ?? []) push("submodel", sm.name, t, sm, sm.group);
     }
 
     const series: Series[] = [...raw.entries()]
@@ -288,6 +301,7 @@ export function buildReport(
           source,
           kind: entry.kind,
           label: entry.label,
+          group: entry.group,
           limit: points[points.length - 1]?.limit ?? 100,
           points,
           cycles: splitCycles(points),

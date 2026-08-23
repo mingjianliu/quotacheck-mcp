@@ -67,6 +67,7 @@ export function parseQuotaOutput(raw: string): SubModelBucket[] {
 
     out.push({
       name: `${group} · ${label}`,
+      group,
       used,
       limit: 100,
       pct: used,

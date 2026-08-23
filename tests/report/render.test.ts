@@ -99,6 +99,21 @@ describe("renderReport", () => {
     expect(p.maxPoints).toBe(50);
   });
 
+  it("ships each series' group to the page for overview tiles", () => {
+    const out = html([
+      {
+        source: "antigravity",
+        collectedAt: new Date(T0).toISOString(),
+        subModels: [
+          { name: "Gemini Models · Weekly", group: "Gemini Models", used: 44, limit: 100, pct: 44 },
+          { name: "Claude and GPT models · Weekly", group: "Claude and GPT models", used: 0, limit: 100, pct: 0 },
+        ],
+      },
+    ]);
+    const groups = payloadOf(out).sources[0].series.map((s: any) => s.group);
+    expect(new Set(groups)).toEqual(new Set(["Gemini Models", "Claude and GPT models"]));
+  });
+
   it("hands the page its log cap rather than truncating server-side", () => {
     expect(payloadOf(html(sample)).logCap).toBe(MAX_LOG_ROWS);
   });
