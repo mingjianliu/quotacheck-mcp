@@ -40,9 +40,10 @@ class Fetcher: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async {
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/bin/bash")
-            // Inject Homebrew path so WindowServer apps can find npx and node
+            // Inject the paths a WindowServer app lacks: Homebrew for npx and
+            // node, ~/.local/bin for the agy and codex CLIs the collectors run.
             let forceArg = force ? " --force" : ""
-            task.arguments = ["-c", "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\" && cd /Users/mingjianliu/code/quotacheck-mcp && npx tsx scripts/export-json.ts\(forceArg)"]
+            task.arguments = ["-c", "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" && cd /Users/mingjianliu/code/quotacheck-mcp && npx tsx scripts/export-json.ts\(forceArg)"]
             
             let pipe = Pipe()
             let errPipe = Pipe()
