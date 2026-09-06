@@ -2,16 +2,16 @@ import SwiftUI
 import Foundation
 
 struct QuotaUsage: Codable, Hashable {
-    let used: Int
-    let limit: Int
+    let used: Double
+    let limit: Double
     let pct: Double
     let resetsAt: String?
 }
 
 struct SubModelBucket: Codable, Hashable {
     let name: String
-    let used: Int
-    let limit: Int
+    let used: Double
+    let limit: Double
     let pct: Double
     let resetsAt: String?
 }
@@ -29,6 +29,69 @@ class Fetcher: ObservableObject {
     @Published var snapshots: [QuotaSnapshot] = []
     @Published var isRefreshing = false
     @Published var lastError: String? = nil
+    @Published var isBuildingReport = false
+
+    /// Generate the usage report and hand it to the default browser.
+    ///
+    /// The window is generous because it bounds what the report's own time-range
+    /// picker can reach — narrowing happens in the page, not here.
+    func openReport(days: Int = 30) {
+        DispatchQueue.main.async {
+            self.isBuildingReport = true
+            self.lastError = nil
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/bin/bash")
+            // Same PATH injection as refresh(): a WindowServer app does not
+            // inherit a login shell, so neither npx/node nor the collector
+            // binaries (agy, codex, both in ~/.local/bin) are on PATH.
+            task.arguments = ["-c", "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" && cd /Users/mingjianliu/code/quotacheck-mcp && npx tsx scripts/report.ts --days \(days)"]
+
+            let pipe = Pipe()
+            let errPipe = Pipe()
+            task.standardOutput = pipe
+            task.standardError = errPipe
+
+            do {
+                try task.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                task.waitUntilExit()
+
+                guard task.terminationStatus == 0 else {
+                    let errStr = String(data: errData, encoding: .utf8) ?? "Unknown"
+                    DispatchQueue.main.async {
+                        self.lastError = "Report failed (\(task.terminationStatus)): \(errStr.prefix(200))"
+                        self.isBuildingReport = false
+                    }
+                    return
+                }
+
+                // The script prints the written path on its last line.
+                let outStr = String(data: data, encoding: .utf8) ?? ""
+                let path = outStr
+                    .components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .last(where: { $0.hasSuffix(".html") })
+
+                DispatchQueue.main.async {
+                    self.isBuildingReport = false
+                    guard let path, FileManager.default.fileExists(atPath: path) else {
+                        self.lastError = "Report path not found in output."
+                        return
+                    }
+                    NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.lastError = error.localizedDescription
+                    self.isBuildingReport = false
+                }
+            }
+        }
+    }
     
     func refresh(force: Bool = false) {
         // Run on main thread for UI updates
@@ -59,15 +122,29 @@ class Fetcher: ObservableObject {
                 
                 if task.terminationStatus == 0 {
                     do {
+                        let rawStr = String(data: data, encoding: .utf8) ?? ""
+                        // Find the first line that looks like a JSON array
+                        let jsonLine = rawStr.components(separatedBy: .newlines).first(where: { 
+                            $0.trimmingCharacters(in: .whitespaces).hasPrefix("[") && 
+                            $0.trimmingCharacters(in: .whitespaces).hasSuffix("]")
+                        })?.trimmingCharacters(in: .whitespaces)
+                        
+                        guard let validJson = jsonLine else {
+                            throw NSError(domain: "Quotacheck", code: 1, userInfo: [NSLocalizedDescriptionKey: "No valid JSON found in output."])
+                        }
+                        
                         let decoder = JSONDecoder()
-                        let result = try decoder.decode([QuotaSnapshot].self, from: data)
+                        let result = try decoder.decode([QuotaSnapshot].self, from: validJson.data(using: .utf8)!)
                         DispatchQueue.main.async {
                             self.snapshots = result
                             self.isRefreshing = false
                         }
                     } catch {
+                        let rawStr = String(data: data, encoding: .utf8) ?? "binary data"
+                        print("Parse error: \(error)")
+                        print("Raw data: \(rawStr)")
                         DispatchQueue.main.async {
-                            self.lastError = "Parse error: \(error.localizedDescription)"
+                            self.lastError = "Parse error: \(error.localizedDescription)\nData: \(rawStr.prefix(200))"
                             self.isRefreshing = false
                         }
                     }
@@ -248,6 +325,29 @@ struct ContentView: View {
                         .foregroundColor(.secondary)
                 }
                 Spacer()
+                Button(action: { fetcher.openReport() }) {
+                    HStack(spacing: 4) {
+                        if fetcher.isBuildingReport {
+                            ProgressView()
+                                .scaleEffect(0.4)
+                                .frame(width: 10, height: 10)
+                        } else {
+                            Image(systemName: "chart.xyaxis.line")
+                                .font(.system(size: 10))
+                        }
+                        Text(fetcher.isBuildingReport ? "Building…" : "History")
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(fetcher.isBuildingReport)
+                .font(.system(.caption, design: .rounded))
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.primary.opacity(0.05))
+                .cornerRadius(6)
+
                 Button("Quit") {
                     NSApplication.shared.terminate(nil)
                 }
@@ -362,7 +462,6 @@ struct SourceView: View {
     private func sourceIcon(for source: String) -> String {
         switch source.lowercased() {
         case "claude-code": return "terminal.fill"
-        case "gemini-cli": return "cpu.fill"
         case "gemini-web": return "globe"
         case "antigravity": return "bolt.fill"
         case "codex": return "chevron.left.forwardslash.chevron.right"
@@ -373,7 +472,6 @@ struct SourceView: View {
     private func sourceColor(for source: String) -> Color {
         switch source.lowercased() {
         case "claude-code": return Color(red: 0.9, green: 0.45, blue: 0.3)
-        case "gemini-cli": return Color.blue
         case "gemini-web": return Color.teal
         case "antigravity": return Color.purple
         case "codex": return Color.green
@@ -384,7 +482,6 @@ struct SourceView: View {
     private func formatSourceName(_ source: String) -> String {
         switch source.lowercased() {
         case "claude-code": return "Claude Code"
-        case "gemini-cli": return "Gemini CLI"
         case "gemini-web": return "Gemini Web"
         case "antigravity": return "Antigravity"
         case "codex": return "Codex"
@@ -406,8 +503,8 @@ struct SourceView: View {
 
 struct QuotaBar: View {
     let name: String
-    let used: Int
-    let limit: Int
+    let used: Double
+    let limit: Double
     let pct: Double
     let resetsAt: String?
 
@@ -419,7 +516,7 @@ struct QuotaBar: View {
         self.resetsAt = usage.resetsAt
     }
 
-    init(name: String, used: Int, limit: Int, pct: Double, resetsAt: String? = nil) {
+    init(name: String, used: Double, limit: Double, pct: Double, resetsAt: String? = nil) {
         self.name = name
         self.used = used
         self.limit = limit
@@ -435,7 +532,7 @@ struct QuotaBar: View {
                     .fontWeight(.medium)
                     .foregroundColor(.primary.opacity(0.8))
                 Spacer()
-                Text(limit == 100 ? "\(used)%" : "\(used) / \(limit)")
+                Text(limit == 100 ? "\(Int(used))%" : "\(Int(used)) / \(Int(limit))")
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundColor(.secondary)
             }
