@@ -123,6 +123,44 @@ describe("buildReport", () => {
     });
   });
 
+  it("puts a group's weekly bucket above its short window", () => {
+    const r = report([
+      {
+        source: "antigravity",
+        collectedAt: at(0),
+        subModels: [
+          { name: "Gemini Models · 5-hour", group: "Gemini Models", used: 7, limit: 100, pct: 7 },
+          { name: "Claude and GPT models · Weekly", group: "Claude and GPT models", used: 0, limit: 100, pct: 0 },
+          { name: "Gemini Models · Weekly", group: "Gemini Models", used: 40, limit: 100, pct: 40 },
+          { name: "Claude and GPT models · 5-hour", group: "Claude and GPT models", used: 1, limit: 100, pct: 1 },
+        ],
+      },
+    ]);
+    expect(r.sources[0].series.map((s) => s.label)).toEqual([
+      "Claude and GPT models · Weekly",
+      "Claude and GPT models · 5-hour",
+      "Gemini Models · Weekly",
+      "Gemini Models · 5-hour",
+    ]);
+  });
+
+  it("leaves ungrouped sub-models on their alphabetical order", () => {
+    const r = report([
+      {
+        source: "gemini-web",
+        collectedAt: at(0),
+        subModels: [
+          { name: "weekly quota", used: 40, limit: 100, pct: 40 },
+          { name: "session quota", used: 7, limit: 100, pct: 7 },
+        ],
+      },
+    ]);
+    expect(r.sources[0].series.map((s) => s.label)).toEqual([
+      "session quota",
+      "weekly quota",
+    ]);
+  });
+
   it("orders sources alphabetically and series session-then-weekly-then-submodels", () => {
     const r = report([
       { source: "gemini-web", collectedAt: at(0), subModels: [{ name: "Z", used: 1, limit: 100, pct: 1 }] },

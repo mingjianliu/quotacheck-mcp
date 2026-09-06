@@ -59,7 +59,13 @@ function payload(data: ReportData) {
           kind: s.kind,
           label: s.label,
           group: s.group,
-          pts: s.points.map((p) => [p.t, p.pct, p.used, p.remaining, p.resetsAt ?? null]),
+          pts: s.points.map((p) => [
+            p.t,
+            p.pct,
+            p.used,
+            p.remaining,
+            p.resetsAt ?? null,
+          ]),
           cycles: s.cycles.map((c) => [
             c.startsAt,
             c.endsAt,
@@ -591,8 +597,6 @@ ${body}
 
     var last = pts[pts.length - 1];
     var t = tier(last[1]);
-    var quiet = pts.every(function (p) { return p[1] === 0; });
-    if (quiet) card.setAttribute("data-quiet", "true");
 
     var head = el("div", "bucket-head");
     var id = el("div", "bucket-id");
@@ -624,7 +628,10 @@ ${body}
     head.appendChild(dl);
     card.appendChild(head);
 
-    if (!quiet) {
+    // A bucket flat at 0% still gets its chart: the reader asked whether it was
+    // touched, and a line on the baseline answers that where a sentence does
+    // not — it also shows *when* the range was covered by readings at all.
+    {
       var drawn = capPts(pts, D.maxPoints);
       var wrap = el("div", "chart-wrap");
       wrap.innerHTML = chartSvg(drawn, s.cycles, src.outages, a, b);
@@ -644,8 +651,6 @@ ${body}
         card.appendChild(el("p", "sampled",
           "图上按峰值抽样至 " + drawn.length + " 点（区间内共 " + pts.length + " 条读数）；完整读数见下方刷新记录。"));
       }
-    } else {
-      card.appendChild(el("p", "quiet-note", "所选时间范围内未使用。"));
     }
 
     var tables = el("div", "tables");
@@ -763,11 +768,24 @@ ${body}
       head.appendChild(el("p", "meta mono", meta));
       sec.appendChild(head);
 
-      var cards = src.series.map(function (s) { return { s: s, pts: inRange(s.pts, state.from, state.to) }; });
+      var cards = src.series.map(function (s) {
+        var pts = inRange(s.pts, state.from, state.to);
+        return {
+          s: s,
+          pts: pts,
+          quiet: !pts.length || pts.every(function (p) { return p[1] === 0; }),
+        };
+      });
       // Buckets with something to show lead; idle and empty ones settle below.
+      // A shared-limit group moves as one block, so its weekly stays directly
+      // above its short window even when only one of the two saw any usage.
+      var idle = {};
+      cards.forEach(function (c) {
+        var g = c.s.group || c.s.key;
+        idle[g] = (g in idle ? idle[g] : true) && c.quiet;
+      });
       cards.sort(function (x, y) {
-        var xq = !x.pts.length || x.pts.every(function (p) { return p[1] === 0; });
-        var yq = !y.pts.length || y.pts.every(function (p) { return p[1] === 0; });
+        var xq = idle[x.s.group || x.s.key], yq = idle[y.s.group || y.s.key];
         return (xq ? 1 : 0) - (yq ? 1 : 0);
       });
       if (!cards.length) sec.appendChild(el("p", "empty-source", "这段时间内只有失败的采集记录。"));

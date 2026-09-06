@@ -223,6 +223,25 @@ const KIND_ORDER: Record<SeriesKind, number> = {
   submodel: 2,
 };
 
+/** Window ordering inside a shared-limit group: longest window first. */
+const WINDOW_ORDER = ["weekly", "5-hour"];
+
+/**
+ * Rank a grouped bucket by the window it meters.
+ *
+ * Antigravity meters each model family as a weekly limit plus a rolling
+ * 5-hour one, labelled "<group> · <window>". The weekly is the one that
+ * actually runs out, so it leads and the short window reads as detail beneath
+ * it. Ungrouped buckets all rank the same, leaving their order to the label.
+ */
+function windowRank(s: { label: string; group?: string }): number {
+  if (!s.group) return 0;
+  const prefix = `${s.group} · `;
+  const window = s.label.startsWith(prefix) ? s.label.slice(prefix.length) : s.label;
+  const i = WINDOW_ORDER.indexOf(window.toLowerCase());
+  return i < 0 ? WINDOW_ORDER.length : i;
+}
+
 export function buildReport(
   snapshots: QuotaSnapshot[],
   opts: BuildOptions,
@@ -311,6 +330,9 @@ export function buildReport(
       .sort(
         (a, b) =>
           KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
+          // Keep a shared-limit group's buckets adjacent, weekly first.
+          (a.group ?? "").localeCompare(b.group ?? "") ||
+          windowRank(a) - windowRank(b) ||
           a.label.localeCompare(b.label),
       );
 
