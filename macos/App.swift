@@ -364,6 +364,7 @@ struct SourceView: View {
         case "gemini-cli": return "cpu.fill"
         case "gemini-web": return "globe"
         case "antigravity": return "bolt.fill"
+        case "codex": return "chevron.left.forwardslash.chevron.right"
         default: return "sparkles"
         }
     }
@@ -374,6 +375,7 @@ struct SourceView: View {
         case "gemini-cli": return Color.blue
         case "gemini-web": return Color.teal
         case "antigravity": return Color.purple
+        case "codex": return Color.green
         default: return Color.indigo
         }
     }
@@ -384,6 +386,7 @@ struct SourceView: View {
         case "gemini-cli": return "Gemini CLI"
         case "gemini-web": return "Gemini Web"
         case "antigravity": return "Antigravity"
+        case "codex": return "Codex"
         default: return source.split(separator: "-").map { $0.capitalized }.joined(separator: " ")
         }
     }

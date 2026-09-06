@@ -21,10 +21,12 @@ describe("loadConfig", () => {
       "claude-code",
       "gemini-web",
       "antigravity",
+      "codex",
     ]);
     expect(cfg.playwrightTimeoutMs).toBe(8000);
     expect(cfg.historyEnabled).toBe(true);
     expect(cfg.antigravityUsageBinary).toBe("agy");
+    expect(cfg.codexBinary).toBe("codex");
     expect(cfg.historyRetentionDays).toBe(90);
     expect(cfg.chromeProfilePath).toContain("Chrome");
   });
@@ -44,6 +46,21 @@ describe("loadConfig", () => {
     expect(cfg.enabledSources).toEqual(["claude-code"]);
     // A key the file didn't mention still gets its default.
     expect(cfg.historyRetentionDays).toBe(90);
+  });
+
+  it("accepts codex among the enabled sources", () => {
+    const cfgDir = join(tmp, ".config", "quotacheck-mcp");
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(
+      join(cfgDir, "config.json"),
+      JSON.stringify({
+        enabledSources: ["codex"],
+        codexBinary: "/opt/homebrew/bin/codex",
+      }),
+    );
+    const cfg = loadConfig({ homeDir: tmp });
+    expect(cfg.enabledSources).toEqual(["codex"]);
+    expect(cfg.codexBinary).toBe("/opt/homebrew/bin/codex");
   });
 
   it("throws on invalid JSON", () => {

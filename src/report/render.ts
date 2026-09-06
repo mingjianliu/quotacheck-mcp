@@ -8,6 +8,7 @@ const SOURCE_LABELS: Record<SourceId, string> = {
   "claude-code": "Claude Code",
   "gemini-web": "Gemini Web",
   antigravity: "Antigravity",
+  codex: "Codex",
 };
 
 /** JSON safe to sit inside a <script> element. */

@@ -1,12 +1,14 @@
 export type SourceId =
   | "claude-code"
   | "gemini-web"
-  | "antigravity";
+  | "antigravity"
+  | "codex";
 
 export const ALL_SOURCES: SourceId[] = [
   "claude-code",
   "gemini-web",
   "antigravity",
+  "codex",
 ];
 
 export interface Bucket {
@@ -46,6 +48,8 @@ export interface CollectorContext {
   homeDir: string;
   /** Antigravity CLI used to read quota. Defaults to "agy". */
   antigravityUsageBinary?: string;
+  /** Codex CLI whose app-server reports quota. Defaults to "codex". */
+  codexBinary?: string;
   /** Defaults to true when unset. */
   historyEnabled?: boolean;
   /** Defaults to DEFAULT_RETENTION_DAYS when unset. */

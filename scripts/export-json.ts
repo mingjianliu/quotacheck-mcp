@@ -5,11 +5,13 @@ import type { Collector, CollectorContext } from "../src/types.js";
 import { claudeCodeCollector } from "../src/collectors/claude-code.js";
 import { antigravityCollector } from "../src/collectors/antigravity.js";
 import { geminiWebCollector } from "../src/collectors/gemini-web.js";
+import { codexCollector } from "../src/collectors/codex.js";
 
 const ALL: Collector[] = [
   claudeCodeCollector,
   antigravityCollector,
   geminiWebCollector,
+  codexCollector,
 ];
 
 (async () => {
@@ -19,6 +21,7 @@ const ALL: Collector[] = [
     chromeExecutablePath: cfg.chromeExecutablePath,
     playwrightTimeoutMs: cfg.playwrightTimeoutMs,
     antigravityUsageBinary: cfg.antigravityUsageBinary,
+    codexBinary: cfg.codexBinary,
     homeDir: homedir(),
     historyEnabled: cfg.historyEnabled,
     historyRetentionDays: cfg.historyRetentionDays,

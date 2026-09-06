@@ -5,7 +5,8 @@ A robust Model Context Protocol (MCP) server and native macOS Menu Bar applicati
 Currently, `quotacheck-mcp` monitors and compiles usage across the following sources:
 - **Claude Code**: Retrieves utilization rates for session/weekly quotas by extracting OAuth tokens securely from the macOS Keychain and querying Anthropic's OAuth usage endpoints.
 - **Gemini Web**: Launches a headless browser using Playwright to extract live usage metrics from the Gemini web dashboard.
-- **Antigravity**: Discovers the local language server port, retrieves the CSRF token, and queries its gRPC-over-JSON status endpoint.
+- **Antigravity**: Runs the `agy` CLI in print mode and parses the quota table it prints for both metered model groups.
+- **Codex**: Speaks JSON-RPC to `codex app-server` and reads the account rate-limit snapshot the Codex TUI shows under `/status`.
 
 ---
 
@@ -73,10 +74,12 @@ Alternatively, you can manually configure your `~/.claude/config.json` to regist
   "enabledSources": [
     "claude-code",
     "gemini-web",
-    "antigravity"
+    "antigravity",
+    "codex"
   ],
   "playwrightTimeoutMs": 8000,
   "antigravityUsageBinary": "agy",
+  "codexBinary": "codex",
   "historyEnabled": true,
   "historyRetentionDays": 90
 }
@@ -145,27 +148,27 @@ This opens a headed Chrome browser. Perform your Google login if requested; the 
 ## Architecture and Data Collectors
 
 ```
-                ┌──────────────────────────────────┐
-                │        quotacheck Client         │
-                │    (Claude Code MCP / macOS UI)  │
-                └────────────────┬─────────────────┘
-                                 │
-                 ┌───────────────┴───────────────┐
-                 ▼                               ▼
-      ┌─────────────────────┐         ┌─────────────────────┐
-      │     MCP Server      │         │   macOS Menu Bar    │
-      │   (dist/server.js)  │         │  (Quotacheck.app)   │
-      └──────────┬──────────┘         └──────────┬──────────┘
-                 │ (Run on-demand)               │ (Run script every 5m)
-                 └───────────────┬───────────────┘
-                                 │
-         ┌───────────────────────┼───────────────────────┐
-         ▼                       ▼                       ▼
-┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
-│   claude-code    │   │    gemini-web    │   │   antigravity    │
-│  Reads Keychain  │   │ Playwright XSSI  │   │  Local language  │
-│  & Queries API   │   │  JSON Scraper    │   │  server over RPC │
-└──────────────────┘   └──────────────────┘   └──────────────────┘
+                     ┌──────────────────────────────────┐
+                     │        quotacheck Client         │
+                     │    (Claude Code MCP / macOS UI)  │
+                     └────────────────┬─────────────────┘
+                                      │
+                      ┌───────────────┴───────────────┐
+                      ▼                               ▼
+           ┌─────────────────────┐         ┌─────────────────────┐
+           │     MCP Server      │         │   macOS Menu Bar    │
+           │   (dist/server.js)  │         │  (Quotacheck.app)   │
+           └──────────┬──────────┘         └──────────┬──────────┘
+                      │ (Run on-demand)               │ (Run script every 5m)
+                      └───────────────┬───────────────┘
+                                      │
+         ┌──────────────────┬─────────┴────────┬──────────────────┐
+         ▼                  ▼                  ▼                  ▼
+┌────────────────┐ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐
+│  claude-code   │ │   gemini-web   │ │  antigravity   │ │     codex      │
+│ Reads Keychain │ │Playwright XSSI │ │   agy CLI in   │ │   app-server   │
+│ & Queries API  │ │  JSON Scraper  │ │   print mode   │ │    JSON-RPC    │
+└────────────────┘ └────────────────┘ └────────────────┘ └────────────────┘
 ```
 
 ### 1. Claude Code (`claude-code`)
@@ -180,6 +183,11 @@ This opens a headed Chrome browser. Perform your Google login if requested; the 
 - **Mechanism**: Runs `agy -p "/quota"` (the binary is configurable via `antigravityUsageBinary`) and parses its tab-separated rows: group, limit window, remaining percent, reset time. Slash commands expand in print mode, so this consumes no model tokens.
 - **Shape**: Antigravity meters two *groups* — Gemini models, and Claude/GPT models — each with a weekly limit and a 5-hour limit, giving four buckets. Limits are per group, not per model.
 - **Why not the language server**: its `GetUserStatus` RPC exposes only `quotaInfo.remainingFraction`, which reflects the 5-hour window alone and repeats the same group-wide number for every model. The weekly limit — the one that actually runs out — is absent, and none of its 237 RPC methods exposes it. The RPC also required Antigravity.app to be running, because the port and CSRF token were read from the live process; the CLI does not.
+
+### 4. Codex (`codex`)
+- **Mechanism**: Spawns `codex app-server` (the binary is configurable via `codexBinary`), performs the `initialize` handshake over stdio JSON-RPC, then calls `account/rateLimits/read`. The child is killed as soon as the reply arrives.
+- **Shape**: The backend reports `primary` (a 5-hour window) and `secondary` (weekly), each already a percentage of its own limit, with resets as epoch seconds. These map onto `session` and `weekly`. `rateLimitsByLimitId` becomes grouped sub-model buckets only when an account meters more than one limit; with the usual single `codex` limit it would merely duplicate the two top-level buckets.
+- **Why the app-server**: it is the same snapshot the TUI shows under `/status`, it answers in well under a second, and it consumes no model tokens — unlike driving the CLI in print mode. Codex keeps its own credentials, so `~/.codex/auth.json` is never read.
 
 ---
 
@@ -244,6 +252,12 @@ If you get errors reading tokens:
 failed to read OAuth token from keychain: The specified item could not be found in the keychain.
 ```
 Ensure you have logged in using `claude` CLI. Verify the keychain contains an item matching `"Claude Code-credentials"`.
+
+### Codex Rate Limits Unavailable
+```
+`codex app-server` reported no rate limit window. Is the Codex CLI signed in?
+```
+Run `codex login` (or `codex doctor`) and confirm the account is a plan that meters Codex usage. An API-key-only login has no rate-limit snapshot to report.
 
 ### Antigravity Port Failure
 Ensure the Antigravity companion app or language server is running. Check if `ps aux | grep language_server` displays the running daemon.

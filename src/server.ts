@@ -18,11 +18,13 @@ import {
 import { claudeCodeCollector } from "./collectors/claude-code.js";
 import { antigravityCollector } from "./collectors/antigravity.js";
 import { geminiWebCollector } from "./collectors/gemini-web.js";
+import { codexCollector } from "./collectors/codex.js";
 
 const ALL_COLLECTORS: Collector[] = [
   claudeCodeCollector,
   antigravityCollector,
   geminiWebCollector,
+  codexCollector,
 ];
 
 const ToolInput = z.object({
@@ -36,6 +38,7 @@ async function main() {
     chromeExecutablePath: cfg.chromeExecutablePath,
     playwrightTimeoutMs: cfg.playwrightTimeoutMs,
     antigravityUsageBinary: cfg.antigravityUsageBinary,
+    codexBinary: cfg.codexBinary,
     homeDir: homedir(),
     historyEnabled: cfg.historyEnabled,
     historyRetentionDays: cfg.historyRetentionDays,

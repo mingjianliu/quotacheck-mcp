@@ -9,10 +9,11 @@ const ConfigSchema = z.object({
   chromeProfilePath: z.string(),
   chromeExecutablePath: z.string().optional(),
   enabledSources: z.array(
-    z.enum(["claude-code", "gemini-web", "antigravity"]),
+    z.enum(["claude-code", "gemini-web", "antigravity", "codex"]),
   ),
   playwrightTimeoutMs: z.number().int().positive(),
   antigravityUsageBinary: z.string(),
+  codexBinary: z.string(),
   historyEnabled: z.boolean(),
   historyRetentionDays: z.number().int().positive(),
 });
@@ -44,6 +45,7 @@ export function loadConfig(opts: { homeDir?: string } = {}): Config {
     enabledSources: [...ALL_SOURCES] as SourceId[],
     playwrightTimeoutMs: 8000,
     antigravityUsageBinary: "agy",
+    codexBinary: "codex",
     historyEnabled: true,
     historyRetentionDays: DEFAULT_RETENTION_DAYS,
   };

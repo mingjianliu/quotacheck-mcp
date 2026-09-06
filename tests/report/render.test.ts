@@ -147,6 +147,24 @@ describe("renderReport", () => {
     expect(p.sources.find((s: any) => s.id === "gemini-web").outages[0][2]).toBe(nasty);
   });
 
+  it("labels a codex source with its display name", () => {
+    // Unlabelled sources fall back to the raw id; "codex" would read as a
+    // lowercase slug next to "Claude Code".
+    const payload = payloadOf(
+      html([
+        {
+          source: "codex",
+          collectedAt: new Date(T0).toISOString(),
+          session: { used: 31, limit: 100, pct: 31 },
+          weekly: { used: 5, limit: 100, pct: 5 },
+        },
+      ]),
+    );
+    expect(payload.sources.find((s: any) => s.id === "codex").label).toBe(
+      "Codex",
+    );
+  });
+
   it("renders an empty state rather than a blank page", () => {
     const out = html([]);
     expect(out).toMatch(/还没有/);
