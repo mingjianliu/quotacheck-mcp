@@ -19,6 +19,7 @@ import { claudeCodeCollector } from "./collectors/claude-code.js";
 import { antigravityCollector } from "./collectors/antigravity.js";
 import { geminiWebCollector } from "./collectors/gemini-web.js";
 import { codexCollector } from "./collectors/codex.js";
+import { getUsageHistory } from "./report/usage-tool.js";
 
 const ALL_COLLECTORS: Collector[] = [
   claudeCodeCollector,
@@ -82,11 +83,43 @@ async function main() {
           },
         },
       },
+      {
+        name: "get_usage_history",
+        description:
+          "Quota usage over the last 7 days, from recorded history (no live collection). " +
+          "Returns a plain-text chart per weekly quota — a weekly-level strip with reset markers, " +
+          "daily spend split at each weekly reset, and peak days expanded into sessions — " +
+          "followed by the same data as JSON. Show the chart to the user verbatim in a code block.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sources: {
+              type: "array",
+              items: { type: "string", enum: ALL_SOURCES },
+              description:
+                "Show only these agents, e.g. [\"claude-code\"] when the user asks about Claude " +
+                "or [\"codex\"] for Codex. Omit for all recorded.",
+            },
+          },
+        },
+      },
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const name = req.params.name;
+    if (name === "get_usage_history") {
+      const args = ToolInput.parse(req.params.arguments ?? {});
+      const { text, history } = getUsageHistory(ctx.homeDir, {
+        sources: args.sources,
+      });
+      return {
+        content: [
+          { type: "text", text },
+          { type: "text", text: JSON.stringify(history) },
+        ],
+      };
+    }
     if (name !== "get_all_quotas" && name !== "refresh") {
       throw new Error(`unknown tool: ${name}`);
     }
