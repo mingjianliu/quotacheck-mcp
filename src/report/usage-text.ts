@@ -8,15 +8,46 @@ import type {
 const MIN_MS = 60_000;
 const DAY_MS = 24 * 60 * MIN_MS;
 const BLOCKS = "▁▂▃▄▅▆▇█";
+/** Partial-cell widths, so one absolute scale still resolves a 2% day. */
+const EIGHTHS = "▏▎▍▌▋▊▉█";
+/** A full daily bar = this share of the weekly limit — the SAME scale for every
+ * source, so bar length is comparable across the report. Auto-scaling each
+ * source to its own busiest day (what this did until 2026-09-20) made a 18% day
+ * on one quota draw exactly as long as a 38% day on another. */
 const BAR_WIDTH = 22;
-/** A full bar stands for at least this much, so a barely-used quota draws short bars. */
-const BAR_SCALE_FLOOR_PCT = 10;
+const BAR_FULL_PCT = 100;
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/**
+ * A horizontal bar for `pct` of the weekly limit on the fixed 0..BAR_FULL_PCT
+ * scale, to 1/8 of a cell. Anything above zero draws at least `▏`, so a 2% day
+ * is visible without pretending to be a 20% one.
+ */
+function bar(pct: number): string {
+  if (pct <= 0) return "";
+  const cells = (Math.min(pct, BAR_FULL_PCT) / BAR_FULL_PCT) * BAR_WIDTH;
+  const eighths = Math.max(1, Math.round(cells * 8));
+  const full = Math.floor(eighths / 8);
+  const rest = eighths % 8;
+  return "█".repeat(full) + (rest > 0 ? EIGHTHS[rest - 1] : "");
+}
 
 /** One block character for `value` on a 0..max scale; `·` for nothing at all. */
 function block(value: number, max: number): string {
   if (value <= 0 || max <= 0) return "·";
   const i = Math.ceil((value / max) * BLOCKS.length) - 1;
+  return BLOCKS[Math.min(BLOCKS.length - 1, Math.max(0, i))];
+}
+
+/**
+ * Sparkline cell against the report-wide peak half hour. Square-rooted: eight
+ * block levels spread linearly over a 24% peak put almost every real half hour
+ * (0.5–3%) in the bottom level, which reads as a flat line. The mapping is
+ * still one shared function, so equal height = equal spend across sources.
+ */
+function spark(value: number, max: number): string {
+  if (value <= 0 || max <= 0) return "·";
+  const i = Math.ceil(Math.sqrt(value / max) * BLOCKS.length) - 1;
   return BLOCKS[Math.min(BLOCKS.length - 1, Math.max(0, i))];
 }
 
@@ -54,16 +85,25 @@ export function renderUsageText(history: UsageHistory): string {
   const off = Math.abs(history.utcOffsetMin);
   const zone = `UTC${sign}${pad2(Math.floor(off / 60))}:${pad2(off % 60)}`;
 
+  // One sparkline scale for the whole report (not per session): otherwise a
+  // half hour that spent 1% and one that spent 16% both drew a full-height bar.
+  const sparkMax = Math.max(
+    ...history.quotas.flatMap((q) =>
+      q.cycles.flatMap((c) =>
+        c.days.flatMap((d) => d.sessions.flatMap((s) => s.halfHours)),
+      ),
+    ),
+    0,
+  );
+
   const sessionLine = (s: SessionUsage) => {
-    const max = Math.max(...s.halfHours);
     const span = `${clock(s.from).padStart(7)}→${clock(s.to).padEnd(7)}`;
     const peak = `${String(Math.round(s.sessionPeakPct)).padStart(3)}%${s.sessionPeakPct >= 100 ? " ⛔" : ""}`;
-    return `      ├ session ${span} weekly +${String(Math.round(s.consumedPct)).padStart(2)}% · session peaked ${peak}  ${s.halfHours.map((v) => block(v, max)).join("")}`;
+    return `      ├ session ${span} weekly +${String(Math.round(s.consumedPct)).padStart(2)}% · session peaked ${peak}  ${s.halfHours.map((v) => spark(v, sparkMax)).join("")}`;
   };
 
-  const dayLines = (d: DayUsage, busiest: number) => {
-    const width = busiest > 0 ? Math.round((d.consumedPct / busiest) * BAR_WIDTH) : 0;
-    const row = `  ${date(d.from)} ${weekday(d.from)} ${"█".repeat(width).padEnd(BAR_WIDTH)} ${String(Math.round(d.consumedPct)).padStart(3)}%${d.peak ? "  ◀ PEAK" : ""}`;
+  const dayLines = (d: DayUsage) => {
+    const row = `  ${date(d.from)} ${weekday(d.from)} ${bar(d.consumedPct).padEnd(BAR_WIDTH)} ${String(Math.round(d.consumedPct)).padStart(3)}%${d.peak ? "  ◀ PEAK" : ""}`;
     if (!d.peak) return [row];
     const sessions = d.sessions.filter((s) => s.consumedPct > 0);
     return [
@@ -93,10 +133,6 @@ export function renderUsageText(history: UsageHistory): string {
     }
     lines.push("");
 
-    const busiest = Math.max(
-      BAR_SCALE_FLOOR_PCT,
-      ...q.cycles.flatMap((c) => c.days.map((d) => d.consumedPct)),
-    );
     q.cycles.forEach((c, i) => {
       const prev = q.cycles[i - 1];
       lines.push(
@@ -104,15 +140,16 @@ export function renderUsageText(history: UsageHistory): string {
           ? `══════ ⟲ WEEKLY RESET ${stamp(c.startedAt)} · previous cycle closed at ${Math.round(prev.closedAtPct ?? 0)}% ══════`
           : `┄┄┄┄┄┄ weekly cycle already at ${Math.round(c.openedAtPct)}% when the window opens ┄┄┄┄┄┄`,
       );
-      for (const d of c.days) lines.push(...dayLines(d, busiest));
+      for (const d of c.days) lines.push(...dayLines(d));
     });
     return lines;
   };
 
   return [
     `Quota usage, last ${days} days (times in ${zone}).`,
-    "Bars: share of the weekly limit spent that day. ┃ in the level strip: weekly reset.",
-    "Peak days expand into sessions; the trailing sparkline is weekly spend per half hour.",
+    `Bars: share of the weekly limit spent that day — full bar = ${BAR_FULL_PCT}%, the same scale for every source.`,
+    "┃ in the level strip: weekly reset; the strip itself is the level, 0–100% of the limit.",
+    `Peak days expand into sessions; the trailing sparkline is spend per half hour (√-scaled, full height = ${sparkMax.toFixed(1)}%, shared by every source).`,
     "",
     ...history.quotas.flatMap((q) => [...quotaLines(q), ""]),
   ]

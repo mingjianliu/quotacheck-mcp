@@ -27,6 +27,7 @@ function cc(
   };
 }
 
+const BLOCKS = "▁▂▃▄▅▆▇█";
 const W1 = at(2 * DAY + 10 * HOUR);
 const W2 = at(9 * DAY + 10 * HOUR);
 
@@ -88,15 +89,43 @@ describe("renderUsageText", () => {
     expect(sessions[0]).toContain("11AM→4PM");
     expect(sessions[0]).toContain("weekly +24%");
     expect(sessions[0]).toContain("session peaked 100% ⛔");
-    expect(sessions[0]).toMatch(/▆·█·{7}$/);
+    // Shared √ scale (not per-session): the report-wide peak half hour is the
+    // only full cell, the quieter one is strictly lower, idle halves are `·`.
+    const spark = sessions[0]!.slice(-10);
+    expect(spark).toMatch(/^[▁-█]·[▁-█]·{7}$/);
+    expect(spark[2]).toBe("█");
+    expect(BLOCKS.indexOf(spark[0]!)).toBeLessThan(BLOCKS.indexOf(spark[2]!));
   });
 
-  it("keeps bars short for a quota that was barely used", () => {
+  it("draws a barely-used day as a sub-cell bar, not a short full one", () => {
     const row = text([cc(0, [0, W2]), cc(HOUR, [1, W2])])
       .split("\n")
       .find((l) => l.startsWith("  08-03 Mon"))!;
-    // a full bar stands for at least 10% of the weekly limit
-    expect(row.match(/█/g)).toHaveLength(2);
+    // 1% of the weekly limit = 0.22 of a cell on the fixed 0–100% scale
+    expect(row).not.toContain("█");
+    expect(row).toContain("▎");
+  });
+
+  it("uses one bar scale across sources: equal spend draws an equal bar", () => {
+    // Regression (2026-09-20): bars were normalised per source against that
+    // source's busiest day, so a 18% day on a quiet quota drew exactly as long
+    // a bar as a 38% day on a busy one and the five charts were incomparable.
+    const heavy = text([
+      cc(0, [0, W2]),
+      cc(HOUR, [40, W2]),
+      cc(DAY + HOUR, [50, W2]),
+    ]);
+    const light = text([
+      { ...cc(0, [0, W2]), source: "codex" },
+      { ...cc(DAY + HOUR, [10, W2]), source: "codex" },
+    ]);
+    const barOf = (t: string, day: string) =>
+      t
+        .split("\n")
+        .find((l) => l.startsWith(`  ${day}`))!
+        .slice(12, 34);
+    expect(barOf(heavy, "08-04 Tue")).toBe(barOf(light, "08-04 Tue"));
+    expect(barOf(heavy, "08-04 Tue").trimEnd()).toBe("██▎"); // 10% → 2.2 cells
   });
 
   it("formats times in the reader's zone", () => {
