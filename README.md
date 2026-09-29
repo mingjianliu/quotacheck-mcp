@@ -42,7 +42,26 @@ npm install
 npm run build
 ```
 
-### 2. Connect with Claude Code
+### 2. Start background collection
+
+Install the CLI after building, then start the collector independently of MCP clients:
+
+```bash
+npm install -g .
+quotacheck daemon
+```
+
+On macOS, `quotacheck install-service` installs and starts the user launchd service
+`com.quotacheck.poller` instead. Run it again after moving the installation or changing
+Node's path. Other platforms can supervise `quotacheck daemon` themselves; the Claude
+Keychain adapter currently supports macOS only. The menu bar app expects `quotacheck`
+on PATH (`~/.local/bin`, `/opt/homebrew/bin`, or `/usr/local/bin`).
+
+All clients read stored observations. `refresh` submits a request to the service;
+it never bypasses cooldown or starts its own collector. Closing the menu bar or all
+MCP clients does not stop the service. An offline service is reported explicitly.
+
+### 3. Connect with Claude Code
 
 Register the MCP server inside Claude Code configuration by running:
 ```bash
@@ -81,22 +100,71 @@ Alternatively, you can manually configure your `~/.claude/config.json` to regist
   "antigravityUsageBinary": "agy",
   "codexBinary": "codex",
   "historyEnabled": true,
-  "historyRetentionDays": 90
+  "historyRetentionDays": 90,
+  "rawEnabled": true,
+  "rawRetentionDays": 30,
+  "collectionIntervalMs": 300000,
+  "collectionIntervals": {},
+  "staleAfterMs": 900000,
+  "collectorTimeoutMs": 90000
 }
 ```
 
 ### Usage History
 
-Every real collection is appended to a month-sharded log at
-`~/.config/quotacheck-mcp/history/YYYY-MM.jsonl`, one `QuotaSnapshot` per line.
-Cache hits are not recorded, and failures are recorded with their `error`
-intact — a flat line in a report must be distinguishable from a collector that
-was down. Set `historyEnabled` to `false` to turn recording off.
+New observations are appended to private daily logs at
+`~/.config/quotacheck-mcp/observations/YYYY-MM-DD.jsonl`. Closed days are compressed.
+Old `history/YYYY-MM.jsonl` files remain readable and are not rewritten. Successful
+unchanged observations are recorded; cache reads do not create observations. Failed
+attempts retain their structured error rather than turning into flat usage lines.
 
-Shards whose entire month falls outside `historyRetentionDays` are deleted on
-write. A partially-expired shard is kept whole, so up to ~30 extra days may sit
-on disk; readers filter by exact cutoff, so query results are unaffected. This
-keeps appends O(1) instead of rewriting a multi-megabyte file every few minutes.
+Redacted source usage payloads are stored separately under `raw/` by default. Set
+`rawEnabled: false` to disable these copies; `historyEnabled: false` disables new
+history entirely. Normalized observations still preserve unknown usage fields in
+`extensions`. Credentials, cookies, authentication requests, and unrelated browser
+responses are not captured. Common secret/PII keys and bearer strings are redacted;
+unknown provider fields can still contain personal information. Data directories
+are user-private on POSIX systems; platform ACLs govern Windows access. Retention
+is 90 days for observations and 30 days for raw payloads by default.
+
+Collection is best effort: sleep, network failures and provider cooldown cause gaps.
+Readouts expose observation age, errors and gaps instead of inventing samples. A
+failed critical state write stops further collection. An interrupted request leaves
+a conservative one-hour deadline for Claude across restart; other sources wait for
+the longer of their sampling interval and request timeout. After repairing a storage fault,
+restart the service; do not delete scheduling state to bypass rate limits.
+
+The API distinguishes source-reported values from derived and legacy values.
+Percentage-only limits do not claim absolute consumption counts. Known aliases share
+stable semantic IDs; unrecognized source paths and scopes without stable identifiers
+are marked with weak identity. Account identity is `unknown` unless a source supplies
+it; do not assume historical data spanning a login change belongs to one account.
+
+### Structured queries
+
+```bash
+quotacheck quotas --sources claude-code
+quotacheck status
+quotacheck refresh --sources claude-code
+quotacheck history --from 2026-09-27T00:00:00Z --to 2026-09-28T00:00:00Z --granularity raw
+quotacheck history --from 2026-09-27T00:00:00Z --to 2026-09-28T00:00:00Z --page-size 20 --include-raw
+```
+
+MCP equivalents are `get_quotas`, `get_status`, `refresh`, and `get_history`.
+Filters support sources, accountKeys and limitIds. History intervals are `[from,to)`;
+raw pages default to 100 records (maximum 1000), or 20 with includeRaw. Supply the
+returned cursor with exactly the same query to continue. New observations are
+excluded from an existing pagination session; modification of old legacy logs
+invalidates its cursor. Aggregation supports 5m/30m/1h/1d, reports first/last/min/max
+and sample counts, and separates accounts, units and reset cycles. Unknown cycles
+remain separate samples. Coverage is the fraction of expected sampling slots with
+a successful observation; gap boundaries bound missing evidence, not proven downtime.
+Raw objects above 256 KiB return an export hint: `quotacheck export OBSERVATION_ID`.
+
+`QUOTACHECK_HOME` or CLI `--home` selects an alternate **home root**, useful for
+isolated deployments and testing; data lives under its `.config/quotacheck-mcp`.
+The tool provides evidence, not task attribution, token regression or forecasts.
+
 
 At four sources polling every five minutes the log grows roughly 1,150 lines
 (~500 KB) per day.
@@ -147,33 +215,21 @@ This opens a headed Chrome browser. Perform your Google login if requested; the 
 
 ## Architecture and Data Collectors
 
-```
-                     ┌──────────────────────────────────┐
-                     │        quotacheck Client         │
-                     │    (Claude Code MCP / macOS UI)  │
-                     └────────────────┬─────────────────┘
-                                      │
-                      ┌───────────────┴───────────────┐
-                      ▼                               ▼
-           ┌─────────────────────┐         ┌─────────────────────┐
-           │     MCP Server      │         │   macOS Menu Bar    │
-           │   (dist/server.js)  │         │  (Quotacheck.app)   │
-           └──────────┬──────────┘         └──────────┬──────────┘
-                      │ (Run on-demand)               │ (Run script every 5m)
-                      └───────────────┬───────────────┘
-                                      │
-         ┌──────────────────┬─────────┴────────┬──────────────────┐
-         ▼                  ▼                  ▼                  ▼
-┌────────────────┐ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐
-│  claude-code   │ │   gemini-web   │ │  antigravity   │ │     codex      │
-│ Reads Keychain │ │Playwright XSSI │ │   agy CLI in   │ │   app-server   │
-│ & Queries API  │ │  JSON Scraper  │ │   print mode   │ │    JSON-RPC    │
-└────────────────┘ └────────────────┘ └────────────────┘ └────────────────┘
+```text
+MCP / CLI / menu bar / reports
+       | read observations and status
+       v
+Shared query layer <----- private state + daily history
+       | refresh request                 ^
+       v                                 | single writer
+Local IPC ----------> background coordinator
+                           |
+                source adapters (Claude / Gemini / Antigravity / Codex)
 ```
 
 ### 1. Claude Code (`claude-code`)
 - **Mechanism**: Reads the Anthropic OAuth credentials from the macOS Keychain under the service `"Claude Code-credentials"`.
-- **API Call**: Makes an HTTPS GET request to `api.anthropic.com/api/oauth/usage` with the retrieved token to extract the 5-hour, 7-day, and sub-model (Opus, Sonnet, Omelette/Design) utilization percentages.
+- **API Call**: Makes an HTTPS GET request to `api.anthropic.com/api/oauth/usage` with the retrieved token to preserve scoped limits, session/weekly windows, spend buckets, breakdowns and unknown usage fields.
 
 ### 2. Gemini Web (`gemini-web`)
 - **Mechanism**: Runs a headless instance of Playwright targeting `https://gemini.google.com/usage`.
@@ -193,10 +249,14 @@ This opens a headed Chrome browser. Perform your Google login if requested; the 
 
 ## Exposed MCP Tools
 
-The server exposes two standard tools:
+The server exposes six tools:
 
+- `get_quotas({ sources?, accountKeys?, limitIds? })`: Complete observations with freshness, scopes, units, provenance and errors.
+- `get_history({ from, to, sources?, accountKeys?, limitIds?, granularity?, pageSize?, cursor?, includeRaw? })`: Paginated raw or aggregated observations and data quality.
+- `get_status({ sources? })`: Service health, source capabilities, errors and retry deadlines.
+- `get_usage_history({ sources? })`: Legacy seven-day charts plus JSON.
 - `get_all_quotas({ sources?: string[] })`: Returns a list of quota snapshots for the requested sources (or all enabled sources if omitted).
-- `refresh({ sources?: string[] })`: Explicitly bypasses internal caching mechanisms to force fresh collections.
+- `refresh({ sources?: string[] })`: Submits asynchronous collection to the local service, respecting cooldown and merging concurrent requests.
 
 ---
 
@@ -211,13 +271,23 @@ The following commands are available from the root of the project:
 | `npm run typecheck` | Validates TypeScript compiler checks without compiling output |
 | `npm run test` | Runs the Vitest unit tests |
 | `npm run test:watch` | Runs tests in interactive watch mode |
-| `npm run smoke` | Runs a live end-to-end collector query against active configurations |
+| `npm run smoke` | Reads service health and cached observations without contacting providers |
 | `npm run report` | Renders recorded history as a self-contained HTML report |
 | `npm run login gemini-web` | Logs in and saves authenticated session profiles for Playwright |
 
 ---
 
 ## macOS Menu Bar App
+
+If the default macOS 27 SDK reports a missing `SwiftUIMacros.StateMacro`, use an
+installed compatible SDK explicitly. This checkout was compiled successfully with:
+
+```bash
+swiftc macos/App.swift -parse-as-library \
+  -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk \
+  -target arm64-apple-macosx15.0 -o /tmp/Quotacheck
+```
+
 
 `quotacheck-mcp` ships with a native, lightweight macOS Menu Bar app built in SwiftUI.
 

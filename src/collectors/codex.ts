@@ -1,3 +1,4 @@
+import { codexLimits } from '../source-mapping.js';
 import { spawn } from "node:child_process";
 import type {
   Bucket,
@@ -131,10 +132,11 @@ export function parseRateLimits(
   };
 }
 
-function readRateLimits(binary: string): Promise<AccountRateLimits> {
+function readRateLimits(binary: string, signal?: AbortSignal): Promise<AccountRateLimits> {
   return new Promise((resolve, reject) => {
     const child = spawn(binary, ["app-server"], {
       stdio: ["pipe", "pipe", "pipe"],
+      signal,
     });
 
     let settled = false;
@@ -238,7 +240,7 @@ function readRateLimits(binary: string): Promise<AccountRateLimits> {
 }
 
 export async function collectCodex(
-  ctx?: Pick<CollectorContext, "codexBinary">,
+  ctx?: Pick<CollectorContext, "codexBinary" | "signal">,
   opts: {
     now?: Date;
     read?: (binary: string) => Promise<AccountRateLimits>;
@@ -249,7 +251,8 @@ export async function collectCodex(
   const read = opts.read ?? readRateLimits;
 
   try {
-    const parsed = parseRateLimits(await read(binary));
+    const raw = opts.read ? await read(binary) : await readRateLimits(binary,ctx?.signal);
+    const parsed = parseRateLimits(raw);
     if (!parsed.session && !parsed.weekly && !parsed.subModels) {
       // A signed-out CLI answers with an empty snapshot. Passing that off as a
       // successful read would park codex at 0% indefinitely.
@@ -257,7 +260,7 @@ export async function collectCodex(
         `\`${binary} app-server\` reported no rate limit window. Is the Codex CLI signed in?`,
       );
     }
-    return { source: "codex", collectedAt, ...parsed };
+    return { source: "codex", collectedAt, ...parsed, limits: codexLimits(raw), extensions: { response: raw }, raw };
   } catch (e) {
     return { source: "codex", collectedAt, error: (e as Error).message };
   }

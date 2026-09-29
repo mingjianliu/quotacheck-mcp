@@ -1,3 +1,4 @@
+import type { QuotaLimit, CollectionError } from './observation.js';
 export type SourceId =
   | "claude-code"
   | "gemini-web"
@@ -34,6 +35,11 @@ export interface QuotaSnapshot {
   weekly?: Bucket;
   subModels?: SubModelBucket[];
   error?: string;
+  limits?: QuotaLimit[];
+  extensions?: Record<string, unknown>;
+  raw?: unknown;
+  accountKey?: string;
+  collectionError?: CollectionError;
 }
 
 export interface Collector {
@@ -42,6 +48,7 @@ export interface Collector {
 }
 
 export interface CollectorContext {
+  signal?: AbortSignal;
   chromeProfilePath: string;
   chromeExecutablePath?: string;
   playwrightTimeoutMs: number;

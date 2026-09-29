@@ -16,6 +16,12 @@ const ConfigSchema = z.object({
   codexBinary: z.string(),
   historyEnabled: z.boolean(),
   historyRetentionDays: z.number().int().positive(),
+  rawEnabled: z.boolean(),
+  rawRetentionDays: z.number().int().positive(),
+  collectionIntervalMs: z.number().int().min(1000),
+  collectionIntervals: z.record(z.number().int().min(1000)),
+  staleAfterMs: z.number().int().min(1000),
+  collectorTimeoutMs: z.number().int().min(1000),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -48,6 +54,12 @@ export function loadConfig(opts: { homeDir?: string } = {}): Config {
     codexBinary: "codex",
     historyEnabled: true,
     historyRetentionDays: DEFAULT_RETENTION_DAYS,
+    rawEnabled: true,
+    rawRetentionDays: 30,
+    collectionIntervalMs: 300000,
+    collectionIntervals: {},
+    staleAfterMs: 900000,
+    collectorTimeoutMs: 90000,
   };
 
   const path = join(home, ".config", "quotacheck-mcp", "config.json");

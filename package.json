@@ -1,10 +1,11 @@
 {
   "name": "quotacheck-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server reporting current quota across Claude Code, Gemini web, Antigravity, and Codex",
   "type": "module",
   "bin": {
-    "quotacheck-mcp": "dist/server.js"
+    "quotacheck-mcp": "dist/server.js",
+    "quotacheck": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
@@ -14,7 +15,9 @@
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.ts",
     "login": "tsx src/login.ts",
-    "report": "tsx scripts/report.ts"
+    "report": "tsx scripts/report.ts",
+    "daemon": "tsx src/cli.ts daemon",
+    "quota": "tsx src/cli.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -31,5 +34,11 @@
   },
   "engines": {
     "node": ">=20"
-  }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "macos/App.swift",
+    "macos/build.sh"
+  ]
 }

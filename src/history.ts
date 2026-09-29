@@ -1,3 +1,5 @@
+import { ObservationStore } from './store.js';
+import { toLegacySnapshot } from './observation.js';
 import {
   appendFileSync,
   existsSync,
@@ -129,7 +131,7 @@ export interface HistoryQuery {
  * skipped — a truncated final line from an interrupted write must not make the
  * whole history unreadable.
  */
-export function readHistory(
+export function readLegacyHistory(
   homeDir: string,
   query: HistoryQuery,
 ): QuotaSnapshot[] {
@@ -171,4 +173,12 @@ export function readHistory(
   return out.sort(
     (a, b) => Date.parse(a.collectedAt) - Date.parse(b.collectedAt),
   );
+}
+
+/** Compatibility view combines immutable old month logs with versioned daily observations. */
+export function readHistory(homeDir: string, query: HistoryQuery): QuotaSnapshot[] {
+  const until = query.until ?? new Date();
+  const fresh = new ObservationStore(homeDir).readNew(query.since.toISOString(), new Date(until.getTime()+1).toISOString()).observations
+    .filter(o => !query.sources || query.sources.includes(o.source)).map(toLegacySnapshot);
+  return [...readLegacyHistory(homeDir, query), ...fresh].sort((a,b)=>Date.parse(a.collectedAt)-Date.parse(b.collectedAt));
 }

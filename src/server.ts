@@ -1,143 +1,19 @@
 #!/usr/bin/env node
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { homedir } from "node:os";
-import { z } from "zod";
-import { loadConfig } from "./config.js";
-import { runCollectors } from "./collect.js";
-import {
-  ALL_SOURCES,
-  type Collector,
-  type CollectorContext,
-  type SourceId,
-} from "./types.js";
-import { claudeCodeCollector } from "./collectors/claude-code.js";
-import { antigravityCollector } from "./collectors/antigravity.js";
-import { geminiWebCollector } from "./collectors/gemini-web.js";
-import { codexCollector } from "./collectors/codex.js";
-import { getUsageHistory } from "./report/usage-tool.js";
-
-const ALL_COLLECTORS: Collector[] = [
-  claudeCodeCollector,
-  antigravityCollector,
-  geminiWebCollector,
-  codexCollector,
-];
-
-const ToolInput = z.object({
-  sources: z.array(z.enum(ALL_SOURCES as [SourceId, ...SourceId[]])).optional(),
-});
-
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { homedir } from 'node:os';
+import { callTool, TOOL_DEFINITIONS } from './tools.js';
 async function main() {
-  const cfg = loadConfig();
-  const ctx: CollectorContext = {
-    chromeProfilePath: cfg.chromeProfilePath,
-    chromeExecutablePath: cfg.chromeExecutablePath,
-    playwrightTimeoutMs: cfg.playwrightTimeoutMs,
-    antigravityUsageBinary: cfg.antigravityUsageBinary,
-    codexBinary: cfg.codexBinary,
-    homeDir: homedir(),
-    historyEnabled: cfg.historyEnabled,
-    historyRetentionDays: cfg.historyRetentionDays,
-  };
-  const enabled = ALL_COLLECTORS.filter((c) =>
-    cfg.enabledSources.includes(c.source),
-  );
-
-  const server = new Server(
-    { name: "quotacheck-mcp", version: "0.1.0" },
-    { capabilities: { tools: {} } },
-  );
-
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      {
-        name: "get_all_quotas",
-        description: "Return a current quota snapshot for each enabled source.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            sources: {
-              type: "array",
-              items: { type: "string", enum: ALL_SOURCES },
-              description: "Optional subset of sources. Omit for all enabled.",
-            },
-          },
-        },
-      },
-      {
-        name: "refresh",
-        description:
-          "Force re-collection (identical to get_all_quotas; reserved verb for future caching).",
-        inputSchema: {
-          type: "object",
-          properties: {
-            sources: {
-              type: "array",
-              items: { type: "string", enum: ALL_SOURCES },
-            },
-          },
-        },
-      },
-      {
-        name: "get_usage_history",
-        description:
-          "Quota usage over the last 7 days, from recorded history (no live collection). " +
-          "Returns a plain-text chart per weekly quota — a weekly-level strip with reset markers, " +
-          "daily spend split at each weekly reset, and peak days expanded into sessions — " +
-          "followed by the same data as JSON. Show the chart to the user verbatim in a code block.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            sources: {
-              type: "array",
-              items: { type: "string", enum: ALL_SOURCES },
-              description:
-                "Show only these agents, e.g. [\"claude-code\"] when the user asks about Claude " +
-                "or [\"codex\"] for Codex. Omit for all recorded.",
-            },
-          },
-        },
-      },
-    ],
-  }));
-
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const name = req.params.name;
-    if (name === "get_usage_history") {
-      const args = ToolInput.parse(req.params.arguments ?? {});
-      const { text, history } = getUsageHistory(ctx.homeDir, {
-        sources: args.sources,
-      });
-      return {
-        content: [
-          { type: "text", text },
-          { type: "text", text: JSON.stringify(history) },
-        ],
-      };
+    const home = process.env.QUOTACHECK_HOME ?? homedir();
+    const server = new Server({ name: 'quotacheck-mcp', version: '0.2.0' }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFINITIONS }));
+    server.setRequestHandler(CallToolRequestSchema, async (req) => { try {
+        return await callTool(home, req.params.name, req.params.arguments ?? {});
     }
-    if (name !== "get_all_quotas" && name !== "refresh") {
-      throw new Error(`unknown tool: ${name}`);
-    }
-    const args = ToolInput.parse(req.params.arguments ?? {});
-    const snapshots = await runCollectors(enabled, ctx, {
-      sources: args.sources,
-      forceRefresh: name === "refresh",
-    });
-    return {
-      content: [{ type: "text", text: JSON.stringify(snapshots, null, 2) }],
-    };
-  });
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+    catch (e) {
+        return { isError: true, content: [{ type: 'text', text: String(e) }] };
+    } });
+    await server.connect(new StdioServerTransport());
 }
-
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main().catch(e => { console.error(e); process.exitCode = 1; });

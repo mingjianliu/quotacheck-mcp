@@ -66,7 +66,7 @@ describe("collectClaudeCode", () => {
       return mockReq as any;
     });
 
-    const snap = await collectClaudeCode();
+    const snap = await collectClaudeCode({ platform: "darwin" });
     expect(snap.source).toBe("claude-code");
     expect(snap.error).toBeUndefined();
     expect(snap.session?.used).toBe(10);
@@ -123,7 +123,7 @@ describe("collectClaudeCode", () => {
       return mockReq as any;
     });
 
-    const snap = await collectClaudeCode();
+    const snap = await collectClaudeCode({ platform: "darwin" });
     const names = snap.subModels?.map((m) => m.name);
     // Expected order: extra_usage_USD, opus, sonnet
     expect(names).toEqual(["extra_usage_USD", "opus", "sonnet"]);
@@ -136,7 +136,7 @@ describe("collectClaudeCode", () => {
       return {} as any;
     });
 
-    const snap = await collectClaudeCode();
+    const snap = await collectClaudeCode({ platform: "darwin" });
     expect(snap.source).toBe("claude-code");
     expect(snap.error).toMatch(/keychain error/i);
   });
@@ -173,7 +173,7 @@ describe("collectClaudeCode", () => {
       return mockReq as any;
     });
 
-    const snap = await collectClaudeCode();
+    const snap = await collectClaudeCode({ platform: "darwin" });
     expect(snap.source).toBe("claude-code");
     expect(snap.error).toMatch(/HTTP 429/);
   });
@@ -205,7 +205,7 @@ describe("collectClaudeCode", () => {
       return mockReq as any;
     });
 
-    const snap = await collectClaudeCode();
+    const snap = await collectClaudeCode({ platform: "darwin" });
     expect(snap.error).toMatch(/HTTP 429/);
     // Each request while rate-limited extends the lockout, so we must make exactly one.
     expect(vi.mocked(request)).toHaveBeenCalledTimes(1);

@@ -1,33 +1,9 @@
-import { homedir } from "node:os";
-import { loadConfig } from "../src/config.js";
-import { runCollectors } from "../src/collect.js";
-import type { Collector, CollectorContext } from "../src/types.js";
-import { claudeCodeCollector } from "../src/collectors/claude-code.js";
-import { antigravityCollector } from "../src/collectors/antigravity.js";
-import { geminiWebCollector } from "../src/collectors/gemini-web.js";
-import { codexCollector } from "../src/collectors/codex.js";
-
-const ALL: Collector[] = [
-  claudeCodeCollector,
-  antigravityCollector,
-  geminiWebCollector,
-  codexCollector,
-];
-
-(async () => {
-  const cfg = loadConfig();
-  const ctx: CollectorContext = {
-    chromeProfilePath: cfg.chromeProfilePath,
-    chromeExecutablePath: cfg.chromeExecutablePath,
-    playwrightTimeoutMs: cfg.playwrightTimeoutMs,
-    antigravityUsageBinary: cfg.antigravityUsageBinary,
-    codexBinary: cfg.codexBinary,
-    homeDir: homedir(),
-    historyEnabled: cfg.historyEnabled,
-    historyRetentionDays: cfg.historyRetentionDays,
-  };
-  const enabled = ALL.filter((c) => cfg.enabledSources.includes(c.source));
-  const forceRefresh = process.argv.includes("--force") || process.argv.includes("-f");
-  const snaps = await runCollectors(enabled, ctx, { forceRefresh });
-  console.log(JSON.stringify(snaps));
-})();
+import { homedir } from 'node:os';
+import { getLegacyQuotas } from '../src/query.js';
+import { refreshSources } from '../src/tools.js';
+const home = process.env.QUOTACHECK_HOME ?? homedir();
+if (process.argv.includes('--force') || process.argv.includes('-f')) {
+  const result = await refreshSources(home);
+  console.error(JSON.stringify(result));
+}
+console.log(JSON.stringify(getLegacyQuotas(home)));

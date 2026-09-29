@@ -37,8 +37,8 @@ if (rawSources) {
   sources = parts as SourceId[];
 }
 
-const home = homedir();
-const cfg = loadConfig();
+const home = process.env.QUOTACHECK_HOME ?? homedir();
+const cfg = loadConfig({ homeDir: home });
 if (!cfg.historyEnabled) {
   console.warn("warning: historyEnabled is false in config.json — nothing new is being recorded.");
 }
@@ -61,7 +61,7 @@ console.log(
 );
 if (snapshots.length === 0) {
   console.log(
-    "history is empty — run `npx tsx scripts/export-json.ts --force` a few times, or let the menu bar app poll.",
+    "history is empty — start `quotacheck daemon` or install the background service.",
   );
 }
 console.log(out);

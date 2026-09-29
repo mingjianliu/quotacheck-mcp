@@ -30,6 +30,21 @@ class Fetcher: ObservableObject {
     @Published var isRefreshing = false
     @Published var lastError: String? = nil
     @Published var isBuildingReport = false
+    private var pollTimer: Timer?
+
+    func startPolling() {
+        guard pollTimer == nil else { return }
+        refresh()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
+    }
+
+    func stopPolling() {
+        pollTimer?.invalidate()
+        pollTimer = nil
+    }
+
 
     /// Generate the usage report and hand it to the default browser.
     ///
@@ -43,11 +58,12 @@ class Fetcher: ObservableObject {
 
         DispatchQueue.global(qos: .userInitiated).async {
             let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/bin/bash")
-            // Same PATH injection as refresh(): a WindowServer app does not
-            // inherit a login shell, so neither npx/node nor the collector
-            // binaries (agy, codex, both in ~/.local/bin) are on PATH.
-            task.arguments = ["-c", "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" && cd /Users/mingjianliu/code/quotacheck-mcp && npx tsx scripts/report.ts --days \(days)"]
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = "\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
+            task.environment = env
+            // GUI processes need an explicit PATH to find the installed quotacheck CLI.
+            task.arguments = ["quotacheck", "report", "--days", String(days)]
 
             let pipe = Pipe()
             let errPipe = Pipe()
@@ -102,11 +118,12 @@ class Fetcher: ObservableObject {
         
         DispatchQueue.global(qos: .userInitiated).async {
             let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/bin/bash")
-            // Inject the paths a WindowServer app lacks: Homebrew for npx and
-            // node, ~/.local/bin for the agy and codex CLIs the collectors run.
-            let forceArg = force ? " --force" : ""
-            task.arguments = ["-c", "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" && cd /Users/mingjianliu/code/quotacheck-mcp && npx tsx scripts/export-json.ts\(forceArg)"]
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = "\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
+            task.environment = env
+            // This CLI reads stored data; only the background service contacts providers.
+            task.arguments = ["quotacheck", "legacy"] + (force ? ["--refresh"] : [])
             
             let pipe = Pipe()
             let errPipe = Pipe()
@@ -320,7 +337,7 @@ struct ContentView: View {
                     Image(systemName: "arrow.triangle.2.circlepath")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
-                    Text("Auto-refreshes every 5m")
+                    Text("Background collection · view updates every 5s")
                         .font(.system(.caption2, design: .rounded))
                         .foregroundColor(.secondary)
                 }
@@ -363,12 +380,8 @@ struct ContentView: View {
         }
         .padding(16)
         .frame(width: 360, height: 480) // Set a fixed width and height so it never collapses and gets cut off
-        .onAppear {
-            fetcher.refresh(force: true)
-            Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
-                fetcher.refresh(force: true)
-            }
-        }
+        .onAppear { fetcher.startPolling() }
+        .onDisappear { fetcher.stopPolling() }
     }
 }
 

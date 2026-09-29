@@ -1,4 +1,5 @@
-import { exec } from "node:child_process";
+import { antigravityLimits } from '../source-mapping.js';
+import { execFile } from "node:child_process";
 import type { Collector, CollectorContext, QuotaSnapshot, SubModelBucket } from "../types.js";
 
 /**
@@ -81,11 +82,11 @@ export function parseQuotaOutput(raw: string): SubModelBucket[] {
   return out.map(({ _rank, _group, ...bucket }) => bucket);
 }
 
-function runAgy(binary: string): Promise<string> {
+function runAgy(binary: string, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
-    exec(
-      `${binary} -p "/quota" --print-timeout ${PRINT_TIMEOUT_S}s`,
-      { timeout: EXEC_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
+    execFile(
+      binary, ["-p", "/quota", "--print-timeout", `${PRINT_TIMEOUT_S}s`],
+      { timeout: EXEC_TIMEOUT_MS, maxBuffer: 1024 * 1024, signal },
       (err, stdout, stderr) => {
         // A non-zero exit with usable rows on stdout still beats reporting a
         // failure, so the output is judged by the caller, not the exit code.
@@ -100,20 +101,20 @@ function runAgy(binary: string): Promise<string> {
 }
 
 export async function collectAntigravity(
-  ctx?: Pick<CollectorContext, "antigravityUsageBinary">,
+  ctx?: Pick<CollectorContext, "antigravityUsageBinary" | "signal">,
 ): Promise<QuotaSnapshot> {
   const collectedAt = new Date().toISOString();
   const binary = ctx?.antigravityUsageBinary || "agy";
 
   try {
-    const stdout = await runAgy(binary);
+    const stdout = await runAgy(binary,ctx?.signal);
     const subModels = parseQuotaOutput(stdout);
     if (subModels.length === 0) {
       throw new Error(
         `No quota rows in \`${binary} -p "/quota"\` output. Is the Antigravity CLI installed and signed in?`,
       );
     }
-    return { source: "antigravity", collectedAt, subModels };
+    return { source: "antigravity", collectedAt, subModels, limits: antigravityLimits(stdout), raw: { quotaTable: stdout }, extensions: {quotaTable:stdout} };
   } catch (e) {
     return {
       source: "antigravity",

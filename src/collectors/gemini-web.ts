@@ -1,3 +1,4 @@
+import { geminiLimits } from '../source-mapping.js';
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { launchAuthenticatedContext } from "../utils/playwright.js";
@@ -138,6 +139,9 @@ export function parseJSf9Qc(payload: unknown, now: Date): QuotaSnapshot | null {
     source: "gemini-web",
     collectedAt: now.toISOString(),
     subModels,
+    limits: geminiLimits(payload),
+    raw: {rpcId:"jSf9Qc",payload},
+    extensions: {rpcId:"jSf9Qc",payload},
   };
 }
 
@@ -166,6 +170,9 @@ export function parseGeminiWeb(html: string, now: Date): QuotaSnapshot {
       source: "gemini-web",
       collectedAt: now.toISOString(),
       subModels,
+      limits: subModels.map(b => ({id:`html:${b.name}`,label:b.name,scope:{},window:{kind:'unknown'},measurement:{used:b.used,limit:b.limit,utilizationPct:b.pct,unit:'count'},provenance:{kind:'derived' as const,paths:[`html[data-model=${b.name}]`],identity:'weak' as const,rule:'html-used-divided-by-limit-v1'}})),
+      extensions: {htmlQuotaRows:subModels},
+      raw: {htmlQuotaRows:subModels},
     };
   }
 
@@ -177,6 +184,7 @@ export function parseGeminiWeb(html: string, now: Date): QuotaSnapshot {
 }
 
 export async function collectGeminiWeb(opts: {
+  signal?: AbortSignal;
   sessionPath: string;
   chromeExecutablePath?: string;
   timeoutMs: number;
@@ -192,6 +200,7 @@ export async function collectGeminiWeb(opts: {
     };
   }
 
+  let abortCleanup: (() => void) | undefined;
   let cleanup: (() => Promise<void> | void) | null = null;
   try {
     const result = await launchAuthenticatedContext(opts.sessionPath, {
@@ -200,6 +209,9 @@ export async function collectGeminiWeb(opts: {
     });
     const context = result.context;
     cleanup = result.cleanup;
+    abortCleanup = () => { void result.cleanup().catch(() => {}); };
+    opts.signal?.addEventListener("abort", abortCleanup, {once:true});
+    opts.signal?.throwIfAborted();
 
     const batchCaptured: BatchCapture[] = [];
     const readPromises: Promise<void>[] = [];
@@ -295,6 +307,7 @@ export async function collectGeminiWeb(opts: {
       error: (e as Error).message,
     };
   } finally {
+    if(abortCleanup) opts.signal?.removeEventListener("abort",abortCleanup);
     if (cleanup) await cleanup();
   }
 }
@@ -303,6 +316,7 @@ export const geminiWebCollector: Collector = {
   source: "gemini-web",
   collect: (ctx: CollectorContext) =>
     collectGeminiWeb({
+      signal: ctx.signal,
       sessionPath: sessionPathFor(ctx.homeDir),
       chromeExecutablePath: ctx.chromeExecutablePath,
       timeoutMs: ctx.playwrightTimeoutMs,

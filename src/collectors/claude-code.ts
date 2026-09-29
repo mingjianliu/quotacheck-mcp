@@ -1,10 +1,12 @@
+import { retryAt } from '../source-mapping.js';
+import { classifyError, type CollectionError } from '../observation.js';
+import { parseClaudeUsage } from '../claude-usage.js';
 import { execFile } from "node:child_process";
 import { request } from "node:https";
 import type {
   Collector,
   CollectorContext,
   QuotaSnapshot,
-  SubModelBucket,
 } from "../types.js";
 
 const KEYCHAIN_SERVICE = "Claude Code-credentials";
@@ -36,12 +38,12 @@ interface UsageApiResponse {
   } | null;
 }
 
-async function readOauthAccessToken(): Promise<string> {
+async function readOauthAccessToken(signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       "security",
       ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
-      { timeout: 3000 },
+      { timeout: 3000, signal },
       (err, stdout) => {
         if (err) return reject(err);
         try {
@@ -64,10 +66,11 @@ async function readOauthAccessToken(): Promise<string> {
   });
 }
 
-function fetchUsage(accessToken: string): Promise<UsageApiResponse> {
+function fetchUsage(accessToken: string, signal?: AbortSignal): Promise<UsageApiResponse> {
   return new Promise((resolve, reject) => {
     const req = request(
       {
+        signal,
         hostname: USAGE_API_HOST,
         path: USAGE_API_PATH,
         method: "GET",
@@ -87,18 +90,14 @@ function fetchUsage(accessToken: string): Promise<UsageApiResponse> {
             // while rate-limited pushes retry-after further out. So we never
             // retry here — we surface retry-after and let the cache cover the gap.
             const retryAfter = res.headers["retry-after"];
-            const hint = retryAfter ? ` retry after ${retryAfter}s.` : "";
-            reject(
-              new Error(
-                `usage API rate-limited (HTTP 429).${hint} This endpoint is polled infrequently; repeated requests extend the limit.`,
-              ),
-            );
+            const message = `usage API rate-limited (HTTP 429)${retryAfter ? `; Retry-After: ${retryAfter}` : ''}`;
+            reject(Object.assign(new Error(message), { detail: { kind: 'rate_limited', message, retryAt: retryAt(typeof retryAfter === 'string' ? retryAfter : undefined) } }));
             return;
           }
           if (res.statusCode !== 200) {
             reject(
               new Error(
-                `usage API returned HTTP ${res.statusCode}: ${data.slice(0, 200)}`,
+                `usage API returned HTTP ${res.statusCode}`,
               ),
             );
             return;
@@ -120,25 +119,18 @@ function fetchUsage(accessToken: string): Promise<UsageApiResponse> {
   });
 }
 
-function toBucket(b: UsageBucket | null | undefined) {
-  if (!b) return undefined;
-  return {
-    used: b.utilization,
-    limit: 100,
-    pct: b.utilization,
-    resetsAt: b.resets_at,
-  };
-}
-
 export async function collectClaudeCode(
   opts: {
     now?: Date;
+    signal?: AbortSignal;
+    platform?: NodeJS.Platform;
   } = {},
 ): Promise<QuotaSnapshot> {
   const now = opts.now ?? new Date();
   let token: string;
   try {
-    token = await readOauthAccessToken();
+    if ((opts.platform ?? process.platform) !== "darwin") return { source: "claude-code", collectedAt: now.toISOString(), error: "Claude Keychain credentials are unsupported on this platform", collectionError: {kind:"unsupported", message:"Claude Keychain credentials are unsupported on this platform"} };
+    token = await readOauthAccessToken(opts.signal);
   } catch (err) {
     return {
       source: "claude-code",
@@ -149,56 +141,22 @@ export async function collectClaudeCode(
 
   let usage: UsageApiResponse;
   try {
-    usage = await fetchUsage(token);
+    usage = await fetchUsage(token, opts.signal);
   } catch (err) {
     return {
       source: "claude-code",
       collectedAt: now.toISOString(),
       error: (err as Error).message,
+      collectionError: (err as Error & {detail?: CollectionError}).detail ?? classifyError((err as Error).message),
     };
   }
 
-  const subModels: SubModelBucket[] = [];
-  const subKeys: Array<[string, keyof UsageApiResponse]> = [
-    ["opus", "seven_day_opus"],
-    ["sonnet", "seven_day_sonnet"],
-    ["claude design", "seven_day_omelette"],
-  ];
-  for (const [name, key] of subKeys) {
-    const b = usage[key] as UsageBucket | null | undefined;
-    if (!b) continue;
-    subModels.push({
-      name,
-      used: b.utilization,
-      limit: 100,
-      pct: b.utilization,
-      resetsAt: b.resets_at,
-    });
-  }
+  try { return parseClaudeUsage(usage, now.toISOString()); }
+  catch (err) { return { source: "claude-code", collectedAt: now.toISOString(), error: String(err), collectionError: { kind: "parse", message: String(err) } }; }
 
-  if (usage.extra_usage?.is_enabled) {
-    subModels.push({
-      name: `extra_usage_${usage.extra_usage.currency}`,
-      used: usage.extra_usage.used_credits,
-      limit: usage.extra_usage.monthly_limit,
-      pct: usage.extra_usage.utilization,
-    });
-  }
-
-  if (subModels.length) {
-    subModels.sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  return {
-    source: "claude-code",
-    collectedAt: now.toISOString(),
-    session: toBucket(usage.five_hour),
-    weekly: toBucket(usage.seven_day),
-    subModels: subModels.length ? subModels : undefined,
-  };
 }
 
 export const claudeCodeCollector: Collector = {
   source: "claude-code",
-  collect: (_ctx: CollectorContext) => collectClaudeCode(),
+  collect: (ctx: CollectorContext) => collectClaudeCode({signal:ctx.signal}),
 };
