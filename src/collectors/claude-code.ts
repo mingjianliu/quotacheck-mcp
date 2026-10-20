@@ -3,6 +3,10 @@ import { classifyError, type CollectionError } from '../observation.js';
 import { parseClaudeUsage } from '../claude-usage.js';
 import { execFile } from "node:child_process";
 import { request } from "node:https";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { dataDirectory, privateDirectory } from "../store.js";
+import { ClaudeEngineError, engineSignedIn, fetchEngineUsage, findEngine, maskedLabel, profilePath, readIdentity } from "./claude-engine.js";
 import type {
   Collector,
   CollectorContext,
@@ -119,17 +123,76 @@ function fetchUsage(accessToken: string, signal?: AbortSignal): Promise<UsageApi
   });
 }
 
+/**
+ * Read plan usage, preferring the installed Claude Code engine (see
+ * claude-engine.ts). The Keychain and OAuth endpoint remain only as a macOS
+ * fallback for a machine where no engine can be found.
+ */
 export async function collectClaudeCode(
   opts: {
     now?: Date;
     signal?: AbortSignal;
     platform?: NodeJS.Platform;
+    /** Engine to ask; null skips discovery and goes straight to the Keychain fallback. */
+    engine?: string | null;
+    /** Home of the user whose Claude login is read. */
+    userHome?: string;
+    /** Working directory for the engine, kept private and away from any project. */
+    workDir?: string;
   } = {},
 ): Promise<QuotaSnapshot> {
   const now = opts.now ?? new Date();
+  const userHome = opts.userHome ?? homedir();
+  const engine = opts.engine === undefined ? findEngine(userHome) : opts.engine ?? undefined;
+  if (engine) return collectFromEngine(engine, { ...opts, now, userHome });
+  if ((opts.platform ?? process.platform) !== "darwin") {
+    const message = "Claude Code engine (claude command) not found";
+    return { source: "claude-code", collectedAt: now.toISOString(), error: message, collectionError: { kind: "unsupported", message } };
+  }
+  return collectFromKeychain({ ...opts, now });
+}
+
+async function collectFromEngine(
+  engine: string,
+  opts: { now: Date; signal?: AbortSignal; userHome: string; workDir?: string },
+): Promise<QuotaSnapshot> {
+  const collectedAt = opts.now.toISOString();
+  const fail = (message: string, kind: CollectionError["kind"]): QuotaSnapshot =>
+    ({ source: "claude-code", collectedAt, error: message, collectionError: { kind, message } });
+  const cwd = opts.workDir ?? join(dataDirectory(opts.userHome), "engine");
+  const profile = profilePath(opts.userHome);
+  try {
+    privateDirectory(cwd);
+    // The profile is read before and after: a login change in between would
+    // attribute one account's usage to the other.
+    const before = readIdentity(profile);
+    const usage = await fetchEngineUsage(engine, { cwd, signal: opts.signal });
+    const identity = readIdentity(profile);
+    if (before?.accountKey !== identity?.accountKey) return fail("The Claude account changed during the quota read; retrying later", "unknown");
+    if (!usage.rateLimitsAvailable) {
+      const signedIn = await engineSignedIn(engine, { cwd, signal: opts.signal });
+      return signedIn === false
+        ? fail("Claude Code is signed out. Run claude to sign in again", "authentication")
+        : fail("This Claude login has no plan limits (API key or third-party platform)", "unsupported");
+    }
+    const snapshot = parseClaudeUsage(usage.rateLimits, collectedAt);
+    const label = maskedLabel(identity?.email, usage.subscriptionType);
+    return {
+      ...snapshot,
+      ...(identity ? { accountKey: identity.accountKey } : {}),
+      extensions: { ...snapshot.extensions, account: { type: "claude", ...(usage.subscriptionType ? { planType: usage.subscriptionType } : {}), ...(label ? { label } : {}) } },
+    };
+  } catch (err) {
+    if (err instanceof ClaudeEngineError) return fail(err.message, err.kind);
+    const message = (err as Error).message ?? String(err);
+    return { source: "claude-code", collectedAt, error: message, collectionError: classifyError(message) };
+  }
+}
+
+async function collectFromKeychain(opts: { now: Date; signal?: AbortSignal }): Promise<QuotaSnapshot> {
+  const now = opts.now;
   let token: string;
   try {
-    if ((opts.platform ?? process.platform) !== "darwin") return { source: "claude-code", collectedAt: now.toISOString(), error: "Claude Keychain credentials are unsupported on this platform", collectionError: {kind:"unsupported", message:"Claude Keychain credentials are unsupported on this platform"} };
     token = await readOauthAccessToken(opts.signal);
   } catch (err) {
     return {
@@ -158,5 +221,5 @@ export async function collectClaudeCode(
 
 export const claudeCodeCollector: Collector = {
   source: "claude-code",
-  collect: (ctx: CollectorContext) => collectClaudeCode({signal:ctx.signal}),
+  collect: (ctx: CollectorContext) => collectClaudeCode({ signal: ctx.signal, workDir: join(dataDirectory(ctx.homeDir), "engine") }),
 };

@@ -20,3 +20,6 @@ it('legacy and new read tools work without starting collectors; offline refresh 
         rmSync(home, { recursive: true, force: true });
     }
 });
+it('puts the Node directory on the service PATH so npm-installed CLIs are found', () => {
+    expect(launchdPlist('/Users/u/.nvm/versions/node/v22.1.0/bin/node', '/tmp/cli.js', '/Users/u')).toContain('/Users/u/.local/bin:/Users/u/.nvm/versions/node/v22.1.0/bin:/opt/homebrew/bin');
+});

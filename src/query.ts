@@ -44,7 +44,7 @@ export function getStatus(home: string, sources?: SourceId[], now = new Date()) 
     return { schemaVersion: 1, daemon: state.heartbeatAt && now.getTime() - Date.parse(state.heartbeatAt) < 30000 ? 'recent_heartbeat' : 'offline', heartbeatAt: state.heartbeatAt, pid: state.pid, storageError: error ?? state.storageError,
         historyEnabled: cfg.historyEnabled, retentionDays: cfg.historyRetentionDays, rawEnabled: cfg.rawEnabled, rawRetentionDays: cfg.rawRetentionDays,
         sources: (sources ?? cfg.enabledSources).map(source => ({ source, enabled: cfg.enabledSources.includes(source), intervalMs: cfg.collectionIntervals[source] ?? cfg.collectionIntervalMs,
-            credentialSupport: source === 'claude-code' && process.platform !== 'darwin' ? 'unsupported' : 'requires-local-login', ...(state.sources[source] ?? {}) })).map(({ latest, ...s }) => ({ ...s, lastObservationId: latest?.observationId })) };
+            credentialSupport: 'requires-local-login', ...(state.sources[source] ?? {}) })).map(({ latest, ...s }) => ({ ...s, lastObservationId: latest?.observationId })) };
 }
 export function getQuotas(home: string, input: unknown = {}, now = new Date()) {
     const filters = FilterSchema.parse(input), cfg = loadConfig({ homeDir: home }), store = new ObservationStore(home), { state, error } = stateOf(store);
