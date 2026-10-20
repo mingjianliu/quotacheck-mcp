@@ -26,7 +26,7 @@ Currently, `quotacheck-mcp` monitors and compiles usage across the following sou
 
 Before setting up `quotacheck-mcp`, ensure you have the following prerequisites installed on your system:
 - **Node.js**: Version 20 or higher
-- **macOS**: required for the Claude Keychain integration; the menu bar app needs macOS 13 (Ventura) or later
+- **macOS**: only for the menu bar app (macOS 13 Ventura or later) and `install-service`; the collector runs wherever Node and the agent CLIs do
 - **Google Chrome**: Recommended for the one-time Gemini login (`quotacheck login gemini-web`); collection then runs headless from the saved session
 
 ---
