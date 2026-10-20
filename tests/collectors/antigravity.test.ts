@@ -86,3 +86,12 @@ describe("parseQuotaOutput", () => {
     );
   });
 });
+
+describe("legacy buckets and limits agree", () => {
+  it("parses spaced percents and hyphenated windows the same way in both views", async () => {
+    const { antigravityLimits } = await import("../../src/source-mapping.js");
+    const out = "Gemini\tWeekly Limit Remaining\t80 %\t2026-10-20T00:00:00Z\nGemini\tFive-Hour Limit Remaining\t50%\t2026-10-20T00:00:00Z";
+    expect(parseQuotaOutput(out).map((b) => [b.name, b.pct])).toEqual([["Gemini · Weekly", 20], ["Gemini · 5-hour", 50]]);
+    expect(antigravityLimits(out).map((l) => [l.label, l.measurement.utilizationPct])).toEqual([["Gemini · Weekly", 20], ["Gemini · 5-hour", 50]]);
+  });
+});

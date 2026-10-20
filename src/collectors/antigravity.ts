@@ -1,4 +1,4 @@
-import { antigravityLimits } from '../source-mapping.js';
+import { agyRows, agyWindowKind, antigravityLimits } from '../source-mapping.js';
 import { execFile } from "node:child_process";
 import type { Collector, CollectorContext, QuotaSnapshot, SubModelBucket } from "../types.js";
 
@@ -21,9 +21,9 @@ const EXEC_TIMEOUT_MS = 75_000;
 
 /** "Five Hour Limit Remaining" -> "5-hour". Unknown labels keep their first word. */
 function windowLabel(raw: string): string {
-  const t = raw.trim().toLowerCase();
-  if (t.startsWith("weekly")) return "Weekly";
-  if (t.startsWith("five hour") || t.startsWith("5 hour")) return "5-hour";
+  const kind = agyWindowKind(raw.trim());
+  if (kind === "weekly") return "Weekly";
+  if (kind === "session") return "5-hour";
   const first = raw.trim().split(/\s+/)[0];
   return first ? first[0].toUpperCase() + first.slice(1) : raw.trim();
 }
@@ -50,22 +50,9 @@ function round2(n: number): number {
 export function parseQuotaOutput(raw: string): SubModelBucket[] {
   const out: Array<SubModelBucket & { _rank: number; _group: string }> = [];
 
-  for (const line of raw.split("\n")) {
-    const cells = line.split("\t").map((c) => c.trim());
-    if (cells.length < 3) continue;
-
-    const [group, rawWindow, rawPct, rawReset] = cells;
-    if (!group || !rawWindow) continue;
-
-    const m = /^([0-9]+(?:\.[0-9]+)?)\s*%$/.exec(rawPct ?? "");
-    if (!m) continue;
-    const remaining = Number(m[1]);
-    if (!Number.isFinite(remaining)) continue;
-
-    const label = windowLabel(rawWindow);
+  for (const { group, window, remaining, reset } of agyRows(raw)) {
+    const label = windowLabel(window);
     const used = round2(100 - remaining);
-    const reset = rawReset && !Number.isNaN(Date.parse(rawReset)) ? rawReset : undefined;
-
     out.push({
       name: `${group} · ${label}`,
       group,

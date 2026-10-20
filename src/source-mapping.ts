@@ -32,12 +32,30 @@ export function geminiLimits(payload: unknown): QuotaLimit[] {
         return [{ id: `rpc:jSf9Qc:${code}`, label: code === 1 ? 'session quota' : code === 2 ? 'weekly quota' : `gemini-model-${code}`, scope: { bucketCode: code }, window: { kind, ...(typeof sec === 'number' && Number.isFinite(sec) ? { resetsAt: new Date(sec * 1000).toISOString() } : {}) }, measurement: { utilizationPct: row[1] * 100 }, provenance: { kind: 'derived' as const, paths: [`jSf9Qc[1][${index}]`], rule: 'consumed-fraction-times-100-v1', identity: 'stable' as const }, upstream: { row } }];
     });
 }
-export function antigravityLimits(raw: string): QuotaLimit[] {
+/** One `agy -p "/quota"` row: group, window label, remaining percent, reset text. */
+export interface AgyRow {
+    group: string;
+    window: string;
+    remaining: number;
+    reset?: string;
+}
+/** Rows of the quota table; the CLI prints progress chatter around it, which is skipped. */
+export function agyRows(raw: string): AgyRow[] {
     return raw.split('\n').flatMap(line => {
         const [group, window, pct, reset] = line.split('\t').map(x => x.trim());
-        if (!group || !window || !/^\d+(\.\d+)?%$/.test(pct ?? ''))
+        const m = /^(\d+(?:\.\d+)?)\s*%$/.exec(pct ?? '');
+        if (!group || !window || !m)
             return [];
-        const kind = /weekly/i.test(window) ? 'weekly' : /five hour|5 hour/i.test(window) ? 'session' : window;
-        return [{ id: `group:${group}:${kind}`, label: `${group} · ${kind === 'weekly' ? 'Weekly' : kind === 'session' ? '5-hour' : kind}`, scope: { group }, window: { kind, ...(reset && Number.isFinite(Date.parse(reset)) ? { resetsAt: reset } : {}) }, measurement: { utilizationPct: Math.round((100 - parseFloat(pct)) * 100) / 100 }, provenance: { kind: 'derived' as const, paths: [`rows.${group}.${window}`], identity: 'weak' as const, rule: '100-minus-reported-remaining-v1' }, upstream: { group, window, remaining: pct, reset } }];
+        return [{ group, window, remaining: Number(m[1]), ...(reset && Number.isFinite(Date.parse(reset)) ? { reset } : {}) }];
+    });
+}
+/** "Weekly Limit Remaining" -> weekly; "Five Hour", "Five-Hour", "5 hour", "5-hour" -> session. */
+export function agyWindowKind(window: string): string {
+    return /^weekly/i.test(window) ? 'weekly' : /^(?:five|5)[\s-]*hour/i.test(window) ? 'session' : window;
+}
+export function antigravityLimits(raw: string): QuotaLimit[] {
+    return agyRows(raw).map(({ group, window, remaining, reset }) => {
+        const kind = agyWindowKind(window);
+        return { id: `group:${group}:${kind}`, label: `${group} · ${kind === 'weekly' ? 'Weekly' : kind === 'session' ? '5-hour' : kind}`, scope: { group }, window: { kind, ...(reset ? { resetsAt: reset } : {}) }, measurement: { utilizationPct: Math.round((100 - remaining) * 100) / 100 }, provenance: { kind: 'derived' as const, paths: [`rows.${group}.${window}`], identity: 'weak' as const, rule: '100-minus-reported-remaining-v1' }, upstream: { group, window, remaining: `${remaining}%`, reset } };
     });
 }

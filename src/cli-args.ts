@@ -6,7 +6,7 @@ export function parseCli(args: string[]) {
     const list: Record<string, string> = { 'sources': 'sources', 'account-keys': 'accountKeys', 'limit-ids': 'limitIds' };
     const strings: Record<string, string> = { from: 'from', to: 'to', granularity: 'granularity', cursor: 'cursor', out: 'out' };
     for (let i = 1; i < args.length; i++) {
-        if (command === 'export' && !args[i].startsWith('--') && !id) {
+        if ((command === 'export' || command === 'login') && !args[i].startsWith('--') && !id) {
             id = args[i];
             continue;
         }

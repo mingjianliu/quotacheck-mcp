@@ -28,7 +28,8 @@ describe("loadConfig", () => {
     expect(cfg.antigravityUsageBinary).toBe("agy");
     expect(cfg.codexBinary).toBe("codex");
     expect(cfg.historyRetentionDays).toBe(90);
-    expect(cfg.chromeProfilePath).toContain("Chrome");
+    // macOS and Windows say "Chrome", Linux "google-chrome".
+    expect(cfg.chromeProfilePath).toMatch(/chrome/i);
   });
 
   it("merges user overrides on top of defaults", () => {

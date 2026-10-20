@@ -10,7 +10,7 @@ import type {
 } from "../types.js";
 
 const USAGE_URL = "https://gemini.google.com/usage";
-const LOGIN_HINT = "Run: npx quotacheck-mcp login gemini-web";
+const LOGIN_HINT = "Run: quotacheck login gemini-web";
 
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
 const humanDelay = () => delay(200 + Math.random() * 600);

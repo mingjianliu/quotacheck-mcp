@@ -14,7 +14,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.ts",
-    "login": "tsx src/login.ts",
+    "login": "tsx src/cli.ts login",
     "report": "tsx scripts/report.ts",
     "daemon": "tsx src/cli.ts daemon",
     "quota": "tsx src/cli.ts"
