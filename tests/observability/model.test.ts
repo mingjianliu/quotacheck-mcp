@@ -53,3 +53,12 @@ it('classifies Gemini signed-out redirects as authentication failures', async ()
     const { classifyError } = await import('../../src/observation.js');
     expect(classifyError('Not signed in — /usage redirected to /app.').kind).toBe('authentication');
 });
+it('matches status codes as whole numbers only', async () => {
+    const { classifyError } = await import('../../src/observation.js');
+    expect(classifyError('`codex app-server` exited (1) before answering: error 4013').kind).toBe('unknown');
+    expect(classifyError('HTTP 500 at 1429').kind).toBe('unknown');
+    expect(classifyError('`codex app-server` reported no rate limit window. Is the Codex CLI signed in?').kind).toBe('parse');
+    expect(classifyError('usage API returned HTTP 401').kind).toBe('authentication');
+    expect(classifyError('account/rateLimits/read failed: not logged in').kind).toBe('authentication');
+    expect(classifyError('usage API rate-limited (HTTP 429)').kind).toBe('rate_limited');
+});

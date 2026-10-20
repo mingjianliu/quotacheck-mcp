@@ -66,8 +66,9 @@ export function redact(value: unknown): unknown {
     return value;
 }
 export function classifyError(message: string): CollectionError {
-    const kind: ErrorKind = /429|rate.limit/i.test(message) ? 'rate_limited'
-        : /401|403|keychain|sign.?in|not signed in|signed.?out|session expired|no saved session|captcha/i.test(message) ? 'authentication'
+    // Status codes must stand alone: "error 4013" or a timestamp containing 429 is not one.
+    const kind: ErrorKind = /\b429\b|rate.?limited|too many requests|rate limit (?:exceeded|reached)/i.test(message) ? 'rate_limited'
+        : /\b40[13]\b|unauthori[sz]ed|keychain|sign.?in|not signed in|signed.?out|\blog.?in\b|logged.?(?:in|out)|session expired|no saved session|captcha/i.test(message) ? 'authentication'
             : /timeout|timed out/i.test(message) ? 'timeout'
                 : /unsupported|ENOENT/i.test(message) ? 'unsupported'
                     : /parse|extract quota|no quota rows|no rate limit/i.test(message) ? 'parse'

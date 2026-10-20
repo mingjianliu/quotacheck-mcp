@@ -1,5 +1,5 @@
 import { createConnection, createServer, type Socket } from 'node:net';
-import { chmodSync, closeSync, existsSync, openSync, unlinkSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { dataDirectory, privateDirectory } from './store.js';
 import { stableHash } from './observation.js';
@@ -26,6 +26,27 @@ export function requestIpc(home: string, request: unknown, timeout = 2000): Prom
             finish(Error('incomplete service response')); });
     });
 }
+function staleGuard(path: string): boolean {
+    let pid: number, age: number;
+    try {
+        pid = Number(readFileSync(path, 'utf8'));
+        age = Date.now() - statSync(path).mtimeMs;
+    }
+    catch {
+        return false;
+    }
+    if (age > 60000)
+        return true;
+    if (!Number.isSafeInteger(pid) || pid <= 0)
+        return false;
+    try {
+        process.kill(pid, 0);
+        return false;
+    }
+    catch (e) {
+        return (e as NodeJS.ErrnoException).code === 'ESRCH';
+    }
+}
 export async function startIpc(home: string, handler: (request: unknown) => unknown | Promise<unknown>) {
     const dir = dataDirectory(home);
     privateDirectory(dir);
@@ -35,8 +56,13 @@ export async function startIpc(home: string, handler: (request: unknown) => unkn
         lock = openSync(guard, 'wx', 0o600);
     }
     catch {
-        throw Error('Quota service already starting (service-start.lock exists)');
+        // A crash during startup leaves the guard behind; only a live starter may hold it.
+        if (!staleGuard(guard))
+            throw Error('Quota service already starting (service-start.lock exists)');
+        unlinkSync(guard);
+        lock = openSync(guard, 'wx', 0o600);
     }
+    writeSync(lock, String(process.pid));
     const address = endpoint(home);
     const sockets = new Set<Socket>();
     const server = createServer({ allowHalfOpen: true }, socket => {

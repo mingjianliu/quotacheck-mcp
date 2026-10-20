@@ -25,18 +25,38 @@ describe('single collector scheduling', () => {
         expect(calls).toBe(1);
         expect(store.read('2026-09-27', '2026-09-28').observations[0].error?.kind).toBe('rate_limited');
     });
-    it('pauses authentication failures until explicit retry and isolates sources', async () => {
-        let claudeCalls = 0;
-        const { c, store } = setup([{ source: 'claude-code', collect: async () => { claudeCalls++; return { source: 'claude-code', collectedAt: new Date(now).toISOString(), error: '401 sign in' }; } }, { source: 'codex', collect: async () => ({ source: 'codex', collectedAt: new Date(now).toISOString(), weekly: { used: 1, limit: 100, pct: 1 } }) }]);
+    it('slows authentication failures down without parking them, and isolates sources', async () => {
+        let t = now, claudeCalls = 0;
+        const { c, store } = setup([{ source: 'claude-code', collect: async () => { claudeCalls++; return { source: 'claude-code', collectedAt: new Date(t).toISOString(), error: '401 sign in' }; } }, { source: 'codex', collect: async () => ({ source: 'codex', collectedAt: new Date(t).toISOString(), weekly: { used: 1, limit: 100, pct: 1 } }) }], { now: () => t });
         c.refresh();
         await c.idle();
         c.tick();
         await c.idle();
         expect(claudeCalls).toBe(1);
         expect(store.read('2026-09-27', '2026-09-28').observations).toHaveLength(2);
-        c.refresh(['claude-code'], true);
+        // Manual retries are allowed early, but rate-limited.
+        expect(c.refresh(['claude-code'], true)[0].status).toBe('deferred');
+        t += 60000;
+        expect(c.refresh(['claude-code'], true)[0].status).toBe('accepted');
         await c.idle();
         expect(claudeCalls).toBe(2);
+        expect(c.refresh(['claude-code'], true)[0].status).toBe('deferred');
+        // Automatic collection resumes on its own after the slow retry interval.
+        t += 3600000 * 1.1;
+        c.tick();
+        await c.idle();
+        expect(claudeCalls).toBe(3);
+    });
+    it('resumes automatic collection once a re-login fixes an authentication failure', async () => {
+        let t = now, signedIn = false, calls = 0;
+        const { c } = setup([{ source: 'codex', collect: async () => { calls++; return signedIn ? { source: 'codex', collectedAt: new Date(t).toISOString(), weekly: { used: 1, limit: 100, pct: 1 } } : { source: 'codex', collectedAt: new Date(t).toISOString(), error: 'account/rateLimits/read failed: 401 Unauthorized' }; } }], { now: () => t });
+        c.tick();
+        await c.idle();
+        expect(c.status().sources.codex?.needsAuthentication).toBe(true);
+        signedIn = true;
+        for (let i = 0; i < 3; i++) { t += 3600000; c.tick(); await c.idle(); }
+        expect(c.status().sources.codex).toMatchObject({ needsAuthentication: false, failures: 0 });
+        expect(calls).toBeGreaterThan(1);
     });
     it('does not make a remote request when preflight state cannot be saved', () => {
         let calls = 0;

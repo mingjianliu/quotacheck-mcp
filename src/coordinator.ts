@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Collector, CollectorContext, SourceId, QuotaSnapshot } from './types.js';
-import { classifyError, normalizeSnapshot, type Observation, type CollectionError } from './observation.js';
+import { normalizeSnapshot, type Observation, type CollectionError } from './observation.js';
 import { ObservationStore } from './store.js';
 export interface SourceState {
     lastAttemptAt?: string;
@@ -26,6 +26,10 @@ export interface RefreshResult {
     nextAllowedAt?: string;
     reason?: string;
 }
+/** Retry cadence for a source whose last attempt failed authentication. */
+export const AUTH_RETRY_MS = 3600000;
+/** Minimum spacing of manual retries while a source needs authentication. */
+export const MANUAL_RETRY_MS = 60000;
 export class Coordinator {
     private state: ServiceState;
     private running = new Map<SourceId, Promise<void>>();
@@ -79,10 +83,12 @@ export class Coordinator {
                 return { source: c.source, status: 'unavailable', reason: this.state.storageError ?? 'service stopping' };
             if (this.running.has(c.source))
                 return { source: c.source, status: 'coalesced', requestId: s.requestId };
-            if (s.needsAuthentication && !manual)
-                return { source: c.source, status: 'deferred', reason: 'authentication required' };
-            if (!s.needsAuthentication && s.nextAllowedAt && Date.parse(s.nextAllowedAt) > this.now())
-                return { source: c.source, status: 'deferred', nextAllowedAt: s.nextAllowedAt };
+            // A manual refresh may retry an authentication failure early (the user may have just
+            // signed in again), but never more often than MANUAL_RETRY_MS. Everything else waits
+            // for nextAllowedAt, so a failed login can no longer park a source forever.
+            const manualRetry = manual && s.needsAuthentication && Date.parse(s.lastAttemptAt ?? '') + MANUAL_RETRY_MS <= this.now();
+            if (!manualRetry && s.nextAllowedAt && Date.parse(s.nextAllowedAt) > this.now())
+                return { source: c.source, status: 'deferred', nextAllowedAt: s.nextAllowedAt, ...(s.needsAuthentication ? { reason: 'authentication required' } : {}) };
             s.requestId = randomUUID();
             s.lastAttemptAt = new Date(this.now()).toISOString();
             s.needsAuthentication = false;
@@ -124,11 +130,12 @@ export class Coordinator {
             snap.collectedAt = new Date(this.now()).toISOString();
             const observation = normalizeSnapshot(snap);
             if (observation.error) {
-                const err = observation.error ?? classifyError(snap.error!);
+                const err = observation.error;
                 s.error = err;
                 s.failures++;
                 s.needsAuthentication = err.kind === 'authentication' || err.kind === 'unsupported';
-                const backoff = Math.min(3600000, this.interval(c.source) * 2 ** Math.min(s.failures - 1, 8));
+                // Authentication failures retry slowly instead of waiting for a manual refresh.
+                const backoff = Math.max(s.needsAuthentication ? AUTH_RETRY_MS : 0, Math.min(3600000, this.interval(c.source) * 2 ** Math.min(s.failures - 1, 8)));
                 const retry = err.retryAt ? Date.parse(err.retryAt) : NaN;
                 s.nextAllowedAt = new Date(Math.max(this.now() + backoff * (1 + (this.options.random ?? Math.random)() * 0.1), Number.isFinite(retry) ? retry : 0)).toISOString();
             }
