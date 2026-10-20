@@ -13,7 +13,7 @@ Currently, `quotacheck-mcp` monitors and compiles usage across the following sou
 ## Tech Stack
 
 - **Runtime**: Node.js >= 20
-- **Language**: TypeScript (Backend/MCP Server), Swift 5.0 (macOS Menu Bar UI)
+- **Language**: TypeScript (Backend/MCP Server), Swift 5.7+ (macOS Menu Bar UI)
 - **MCP Protocol**: `@modelcontextprotocol/sdk` (v1.x)
 - **Browser Automation**: Playwright (Headless Chromium)
 - **Validation**: Zod (for configuration parsing and schema safety)
@@ -26,8 +26,8 @@ Currently, `quotacheck-mcp` monitors and compiles usage across the following sou
 
 Before setting up `quotacheck-mcp`, ensure you have the following prerequisites installed on your system:
 - **Node.js**: Version 20 or higher
-- **macOS**: High Sierra or higher (required for native Keychain integration and compiling the SwiftUI app)
-- **Google Chrome**: Recommended for sharing active sessions for browser-based scrapers (Playwright runs via system Chrome profile)
+- **macOS**: required for the Claude Keychain integration; the menu bar app needs macOS 13 (Ventura) or later
+- **Google Chrome**: Recommended for the one-time Gemini login (`quotacheck login gemini-web`); collection then runs headless from the saved session
 
 ---
 
@@ -58,8 +58,12 @@ Keychain adapter currently supports macOS only. The menu bar app expects `quotac
 on PATH (`~/.local/bin`, `/opt/homebrew/bin`, or `/usr/local/bin`).
 
 All clients read stored observations. `refresh` submits a request to the service;
-it never bypasses cooldown or starts its own collector. Closing the menu bar or all
-MCP clients does not stop the service. An offline service is reported explicitly.
+it never starts its own collector and respects each source's cooldown. The one
+exception: a source whose last attempt failed authentication may be retried by a
+manual refresh after one minute, so signing in again (or switching accounts) takes
+effect without waiting. Without a manual refresh such a source is retried hourly.
+Closing the menu bar or all MCP clients does not stop the service. An offline
+service is reported explicitly.
 
 ### 3. Connect with Claude Code
 
@@ -68,7 +72,7 @@ Register the MCP server inside Claude Code configuration by running:
 claude mcp add quotacheck -- node /absolute/path/to/quotacheck-mcp/dist/server.js
 ```
 
-Alternatively, you can manually configure your `~/.claude/config.json` to register the server:
+Alternatively, add it to a project's `.mcp.json`:
 ```json
 {
   "mcpServers": {
@@ -174,13 +178,16 @@ At four sources polling every five minutes the log grows roughly 1,150 lines
 Render the recorded history as a self-contained HTML page:
 
 ```bash
-npm run report                                     # last 7 days
+quotacheck report                                  # last 30 days
+quotacheck report --days 7 --sources codex --out ~/Desktop/quota.html
+npm run report                                     # same, from a checkout
 npm run report -- --days 30
 npm run report -- --days 7 --sources claude-code,gemini-web
 npm run report -- --days 30 --out ~/Desktop/quota.html
 ```
 
-Output defaults to `~/.config/quotacheck-mcp/reports/quota-<days>d.html`. The
+Output defaults to `~/.config/quotacheck-mcp/reports/quota-<days>d.html` and is
+readable only by you (mode 0600). The
 page needs no network access beyond Google Fonts, and works both opened directly
 from disk and published as an artifact.
 
@@ -207,9 +214,9 @@ For the browser-based collectors (like `gemini-web`), you need to capture a brow
 
 Run the interactive login command:
 ```bash
-npm run login gemini-web
+quotacheck login gemini-web          # or, from a checkout: npm run login gemini-web
 ```
-This opens a headed Chrome browser. Perform your Google login if requested; the browser will automatically close once the `/usage` endpoint loads, saving the authenticated state securely to `~/.config/quotacheck-mcp/gemini-web-session.json`.
+This opens a headed Chrome browser. Perform your Google login if requested; the browser will automatically close once the `/usage` endpoint loads, saving the authenticated state to `~/.config/quotacheck-mcp/gemini-web-session.json` (mode 0600, since it holds Google cookies). Pass `--home` (or set `QUOTACHECK_HOME`) to match a service running under another home root.
 
 ---
 
@@ -273,33 +280,33 @@ The following commands are available from the root of the project:
 | `npm run test:watch` | Runs tests in interactive watch mode |
 | `npm run smoke` | Reads service health and cached observations without contacting providers |
 | `npm run report` | Renders recorded history as a self-contained HTML report |
-| `npm run login gemini-web` | Logs in and saves authenticated session profiles for Playwright |
+| `npm run login gemini-web` | Same as `quotacheck login gemini-web`: saves the Gemini session for Playwright |
 
 ---
 
 ## macOS Menu Bar App
 
-If the default macOS 27 SDK reports a missing `SwiftUIMacros.StateMacro`, use an
-installed compatible SDK explicitly. This checkout was compiled successfully with:
-
-```bash
-swiftc macos/App.swift -parse-as-library \
-  -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk \
-  -target arm64-apple-macosx15.0 -o /tmp/Quotacheck
-```
-
-
 `quotacheck-mcp` ships with a native, lightweight macOS Menu Bar app built in SwiftUI.
 
 > [!NOTE]
-> The app runs inside your menu bar as an agent (`LSUIElement` in `Info.plist`), and fetches fresh data in the background every 5 minutes by calling the project's export script.
+> The app runs inside your menu bar as an agent (`LSUIElement` in `Info.plist`). It only
+> reads what the background service stores, by running `quotacheck legacy` every 30
+> seconds while the panel is open; the refresh button also asks the service to collect.
+> It finds `quotacheck` through your login shell's `PATH`, so nvm, volta, fnm and asdf
+> installs work.
 
 ### Build and Run
 
 ```bash
-cd macos
-./build.sh
-open Quotacheck.app
+macos/build.sh
+open macos/Quotacheck.app
+```
+
+If the default macOS 27 SDK reports a missing `SwiftUIMacros.StateMacro`, pass an
+installed compatible SDK through `SWIFTC_FLAGS`:
+
+```bash
+SWIFTC_FLAGS="-sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk -target arm64-apple-macosx15.0" macos/build.sh
 ```
 
 ### Collapsible Accordion UI
@@ -313,8 +320,8 @@ Each provider in the macOS menu bar panel features a fold/unfold chevron button:
 
 ## Troubleshooting
 
-### Chrome Profile Locking
-If Playwright errors out with a message indicating the Chrome User Data directory is locked, it means Chrome is currently running with that profile active. You can remedy this by specifying a dedicated directory or copying your profile into an isolated folder for `quotacheck-mcp` to use.
+### Gemini Session Expired
+Errors such as `Session expired` or `Not signed in — /usage redirected to /app` mean the saved Google session is no longer valid. Run `quotacheck login gemini-web` again; the service retries hourly, or immediately on a manual refresh.
 
 ### Keychain Access Errors (Claude Code)
 If you get errors reading tokens:
@@ -329,5 +336,10 @@ Ensure you have logged in using `claude` CLI. Verify the keychain contains an it
 ```
 Run `codex login` (or `codex doctor`) and confirm the account is a plan that meters Codex usage. An API-key-only login has no rate-limit snapshot to report.
 
-### Antigravity Port Failure
-Ensure the Antigravity companion app or language server is running. Check if `ps aux | grep language_server` displays the running daemon.
+After switching Codex accounts, the next collection reads the new account. If a collection ran mid-switch and failed authentication, press refresh in the menu bar (or run `quotacheck refresh --sources codex`) rather than waiting for the hourly retry. History does not yet record which account a reading came from, so charts spanning a switch mix both accounts.
+
+### Antigravity Quota Unavailable
+```
+No quota rows in `agy -p "/quota"` output. Is the Antigravity CLI installed and signed in?
+```
+Check that `agy -p "/quota"` prints the quota table in a terminal. The service runs with the `PATH` recorded by `install-service` (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`); set `antigravityUsageBinary` to an absolute path if `agy` lives elsewhere.
