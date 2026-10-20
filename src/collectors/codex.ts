@@ -38,7 +38,9 @@ export interface RateLimitSnapshot {
 
 export interface AccountRateLimits {
   /** Single-bucket view; mirrors what the TUI shows. */
-  rateLimits: RateLimitSnapshot;
+  rateLimits: RateLimitSnapshot & { planType?: string | null };
+  /** The ChatGPT workspace. Members of one workspace share it, so the email separates users. */
+  accountId?: string | null;
   /** Multi-bucket view keyed by metered limit id, e.g. `codex`. */
   rateLimitsByLimitId?: Record<string, RateLimitSnapshot> | null;
 }
@@ -144,24 +146,30 @@ export function parseRateLimits(
 
 /**
  * Stable key for the signed-in account, so readings from different logins are
- * never merged. The email itself is hashed, not stored.
+ * never merged. One email can sign in to a personal plan and to a Team
+ * workspace, whose quotas differ, so the workspace (`accountId`) joins the
+ * email when the backend supplies it. Both are hashed, never stored.
  */
-export function codexAccountKey(account: CodexAccount | undefined): string | undefined {
+export function codexAccountKey(account: CodexAccount | undefined, workspace?: string | null): string | undefined {
   if (!account || typeof account.type !== "string") return undefined;
   const email = typeof account.email === "string" ? account.email.trim().toLowerCase() : "";
-  if (account.type === "chatgpt") return email ? `chatgpt:${stableHash(email)}` : undefined;
-  return account.type;
+  if (account.type !== "chatgpt") return account.type;
+  if (!email) return undefined;
+  const ws = typeof workspace === "string" ? workspace.trim() : "";
+  return ws ? `chatgpt:${stableHash(email)}:${stableHash(ws)}` : `chatgpt:${stableHash(email)}`;
 }
 
 /** "mingjian@gmail.com" + plus -> "m…@gmail.com · plus": enough to tell your own accounts apart. */
-export function codexAccountLabel(account: CodexAccount | undefined): string | undefined {
+export function codexAccountLabel(account: CodexAccount | undefined, plan?: string | null): string | undefined {
   if (!account || typeof account.type !== "string") return undefined;
   if (account.type !== "chatgpt") return account.type;
   const email = typeof account.email === "string" ? account.email.trim() : "";
   const at = email.indexOf("@");
   if (at < 1) return undefined;
   const masked = `${email[0]}…${email.slice(at)}`;
-  return account.planType ? `${masked} · ${account.planType}` : masked;
+  // The snapshot's plan is the workspace's; account/read's is the login's.
+  const shown = plan || account.planType;
+  return shown ? `${masked} · ${shown}` : masked;
 }
 
 interface CodexRead {
@@ -313,8 +321,8 @@ export async function collectCodex(
         `\`${binary} app-server\` reported no rate limit window. Is the Codex CLI signed in?`,
       );
     }
-    const accountKey = codexAccountKey(account);
-    const label = codexAccountLabel(account);
+    const accountKey = codexAccountKey(account, raw.accountId);
+    const label = codexAccountLabel(account, raw.rateLimits?.planType);
     return { source: "codex", collectedAt, ...parsed, limits: codexLimits(raw), ...(accountKey ? { accountKey } : {}),
       extensions: { response: raw, ...(account ? { account: { type: account.type, planType: account.planType, ...(label ? { label } : {}) } } : {}) }, raw };
   } catch (e) {

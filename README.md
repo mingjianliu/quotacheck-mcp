@@ -3,9 +3,9 @@
 A robust Model Context Protocol (MCP) server and native macOS Menu Bar application that aggregates your real-time AI tool quota and usage metrics in one unified dashboard. 
 
 Currently, `quotacheck-mcp` monitors and compiles usage across the following sources:
-- **Claude Code**: Retrieves utilization rates for session/weekly quotas by extracting OAuth tokens securely from the macOS Keychain and querying Anthropic's OAuth usage endpoints.
+- **Claude Code**: Asks the installed Claude Code engine for its plan usage (session, weekly and model-scoped limits) with a `get_usage` control request; no prompt is sent and no credentials are read.
 - **Gemini Web**: Launches a headless browser using Playwright to extract live usage metrics from the Gemini web dashboard.
-- **Antigravity**: Runs the `agy` CLI in print mode and parses the quota table it prints for both metered model groups.
+- **Antigravity**: Runs the `agy` CLI in print mode and reads its JSON quota summary (or, on older builds, its quota table) for both metered model groups.
 - **Codex**: Speaks JSON-RPC to `codex app-server` and reads the account rate-limit snapshot the Codex TUI shows under `/status`.
 
 ---
@@ -53,9 +53,9 @@ quotacheck daemon
 
 On macOS, `quotacheck install-service` installs and starts the user launchd service
 `com.quotacheck.poller` instead. Run it again after moving the installation or changing
-Node's path. Other platforms can supervise `quotacheck daemon` themselves; the Claude
-Keychain adapter currently supports macOS only. The menu bar app expects `quotacheck`
-on PATH (`~/.local/bin`, `/opt/homebrew/bin`, or `/usr/local/bin`).
+Node's path. Other platforms can supervise `quotacheck daemon` themselves. The service's
+PATH covers `~/.local/bin`, the directory of the Node it runs under (where `npm i -g`
+puts `claude` and `codex` under nvm or volta), `/opt/homebrew/bin` and `/usr/local/bin`.
 
 All clients read stored observations. `refresh` submits a request to the service;
 it never starts its own collector and respects each source's cooldown. The one
@@ -235,17 +235,19 @@ Local IPC ----------> background coordinator
 ```
 
 ### 1. Claude Code (`claude-code`)
-- **Mechanism**: Reads the Anthropic OAuth credentials from the macOS Keychain under the service `"Claude Code-credentials"`.
-- **API Call**: Makes an HTTPS GET request to `api.anthropic.com/api/oauth/usage` with the retrieved token to preserve scoped limits, session/weekly windows, spend buckets, breakdowns and unknown usage fields.
+- **Mechanism**: Starts a headless `claude -p --input-format stream-json --output-format stream-json` with hooks disabled, in a private working directory, and sends one `get_usage` control request. The engine answers with the same `rate_limits` object as Anthropic's OAuth usage endpoint, fetched with its own login, and is stopped. No prompt is sent, so nothing is billed, and no token passes through this tool. Works wherever Claude Code runs, Linux included.
+- **Engine**: the CLI's install places (`~/.local/bin`, `~/.claude/local`, Homebrew, `/usr/local/bin`), the native installer's newest `~/.local/share/claude/versions`, `PATH`, the service's Node directory, then the desktop app's Code-tab engine.
+- **Account**: keyed by a hash of the `accountUuid` / `organizationUuid` pair in `~/.claude.json` (`$CLAUDE_CONFIG_DIR` if set), read before and after the query; a reading taken while the login changed is discarded. A login without plan limits is told apart from a signed-out engine with `claude auth status --json`.
+- **Fallback**: on macOS with no engine found, the OAuth token in the Keychain item `"Claude Code-credentials"` and `api.anthropic.com/api/oauth/usage`, as before.
 
 ### 2. Gemini Web (`gemini-web`)
 - **Mechanism**: Runs a headless instance of Playwright targeting `https://gemini.google.com/usage`.
 - **Parser**: Listens to raw Google `batchexecute` JSON responses. It extracts the XSSI chunk frames specifically looking for RPC `jSf9Qc` (which contains consumed quota fractions and reset timestamps). If the API response isn't caught, falls back to parsing the static HTML DOM.
 
 ### 3. Antigravity (`antigravity`)
-- **Mechanism**: Runs `agy -p "/quota"` (the binary is configurable via `antigravityUsageBinary`) and parses its tab-separated rows: group, limit window, remaining percent, reset time. Slash commands expand in print mode, so this consumes no model tokens.
+- **Mechanism**: Runs `agy -p /usage --output-format json` (agy 1.1.11+; the binary is configurable via `antigravityUsageBinary`) and reads each group's buckets: id, window, remaining fraction and reset time. Older builds fall back to `agy -p "/quota"` and its tab-separated rows. Slash commands expand in print mode, so this consumes no model tokens. Limit ids are the same from either output, so history continues across an agy upgrade.
 - **Shape**: Antigravity meters two *groups* — Gemini models, and Claude/GPT models — each with a weekly limit and a 5-hour limit, giving four buckets. Limits are per group, not per model.
-- **Why not the language server**: its `GetUserStatus` RPC exposes only `quotaInfo.remainingFraction`, which reflects the 5-hour window alone and repeats the same group-wide number for every model. The weekly limit — the one that actually runs out — is absent, and none of its 237 RPC methods exposes it. The RPC also required Antigravity.app to be running, because the port and CSRF token were read from the live process; the CLI does not.
+- **Why not the language server**: its `GetUserStatus` RPC reflects the 5-hour window alone. `RetrieveUserQuotaSummary` does carry the weekly limit, but agy's own server answers only requests with a CSRF token that no command line shows, and the IDE's server needs Antigravity.app running. The CLI needs neither.
 
 ### 4. Codex (`codex`)
 - **Mechanism**: Spawns `codex app-server` (the binary is configurable via `codexBinary`), performs the `initialize` handshake over stdio JSON-RPC, then calls `account/rateLimits/read`. The child is killed as soon as the reply arrives.
@@ -253,6 +255,16 @@ Local IPC ----------> background coordinator
 - **Why the app-server**: it is the same snapshot the TUI shows under `/status`, it answers in well under a second, and it consumes no model tokens — unlike driving the CLI in print mode. Codex keeps its own credentials, so `~/.codex/auth.json` is never read.
 
 ---
+
+## Running alongside Agent HUD
+
+[Agent HUD](https://github.com/jazzenchen/agent-hud-open) shows quotas, tokens and approvals at the notch and on iPhone and Apple Watch; quotacheck keeps the long history, the reports and the MCP tools an agent can query. The Claude, Antigravity and Codex readers here follow Agent HUD's approach (Apache-2.0).
+
+Agent HUD's iPhone app reads what the Agent HUD Mac app collects, so both run on the Mac. Each then asks Claude's usage service on its own, and Agent HUD already asks every few minutes while an agent works, so slow quotacheck's Claude collection down to keep the combined rate low:
+
+```json
+{ "collectionIntervals": { "claude-code": 1800000 } }
+```
 
 ## Exposed MCP Tools
 
@@ -323,12 +335,10 @@ Each provider in the macOS menu bar panel features a fold/unfold chevron button:
 ### Gemini Session Expired
 Errors such as `Session expired` or `Not signed in — /usage redirected to /app` mean the saved Google session is no longer valid. Run `quotacheck login gemini-web` again; the service retries hourly, or immediately on a manual refresh.
 
-### Keychain Access Errors (Claude Code)
-If you get errors reading tokens:
-```
-failed to read OAuth token from keychain: The specified item could not be found in the keychain.
-```
-Ensure you have logged in using `claude` CLI. Verify the keychain contains an item matching `"Claude Code-credentials"`.
+### Claude Code Quota Unavailable
+- `Claude Code is signed out. Run claude to sign in again`: run `claude` and sign in; the next manual refresh (after a minute) or the hourly retry picks it up.
+- `This Claude login has no plan limits`: the engine is signed in with an API key or a third-party platform, which has no subscription limits to report.
+- `Claude Code engine (claude command) not found`: install Claude Code, or make sure the service's PATH reaches it (run `quotacheck install-service` again after changing Node).
 
 ### Codex Rate Limits Unavailable
 ```
@@ -340,6 +350,6 @@ After switching Codex accounts, the next collection reads the new account. If a 
 
 ### Antigravity Quota Unavailable
 ```
-No quota rows in `agy -p "/quota"` output. Is the Antigravity CLI installed and signed in?
+No quota rows in `agy -p /usage` or `agy -p /quota` output. Is the Antigravity CLI installed and signed in?
 ```
-Check that `agy -p "/quota"` prints the quota table in a terminal. The service runs with the `PATH` recorded by `install-service` (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`); set `antigravityUsageBinary` to an absolute path if `agy` lives elsewhere.
+Check that `agy -p /usage --output-format json` (or `agy -p "/quota"` on older builds) prints the quota in a terminal. The service runs with the `PATH` recorded by `install-service` (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`); set `antigravityUsageBinary` to an absolute path if `agy` lives elsewhere.

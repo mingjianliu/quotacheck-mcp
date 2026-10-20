@@ -170,7 +170,7 @@ describe("account identity", () => {
     const a = await collectCodex(undefined, { now: new Date(0), read: read("Someone@Example.com") });
     const b = await collectCodex(undefined, { now: new Date(0), read: read("someone@example.com") });
     const c = await collectCodex(undefined, { now: new Date(0), read: read("other@example.com") });
-    expect(a.accountKey).toMatch(/^chatgpt:[0-9a-f]{24}$/);
+    expect(a.accountKey).toMatch(/^chatgpt:[0-9a-f]{24}(:[0-9a-f]{24})?$/);
     expect(a.accountKey).toBe(b.accountKey);
     expect(c.accountKey).not.toBe(a.accountKey);
     expect(a.extensions?.account).toEqual({ type: "chatgpt", planType: "plus", label: "S…@Example.com · plus" });
@@ -181,5 +181,20 @@ describe("account identity", () => {
     const snap = await collectCodex(undefined, { now: new Date(0), read: async () => SAMPLE });
     expect(snap.error).toBeUndefined();
     expect(snap.accountKey).toBeUndefined();
+  });
+});
+
+describe("workspace identity", () => {
+  it("separates one email's personal plan from its Team workspace", async () => {
+    const read = (accountId: string | undefined, planType: string) => async () => ({
+      limits: { ...SAMPLE, accountId, rateLimits: { ...SAMPLE.rateLimits, planType } },
+      account: { type: "chatgpt", email: "someone@example.com", planType: "plus" },
+    });
+    const personal = await collectCodex(undefined, { now: new Date(0), read: read("ws-personal", "plus") });
+    const team = await collectCodex(undefined, { now: new Date(0), read: read("ws-team", "team") });
+    expect(personal.accountKey).toMatch(/^chatgpt:[0-9a-f]{24}:[0-9a-f]{24}$/);
+    expect(team.accountKey).not.toBe(personal.accountKey);
+    expect((team.extensions?.account as { label?: string }).label).toBe("s…@example.com · team");
+    expect(JSON.stringify(team.accountKey)).not.toContain("ws-team");
   });
 });
