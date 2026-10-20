@@ -71,7 +71,7 @@ describe("collectClaudeCode", () => {
     expect(snap.error).toBeUndefined();
     expect(snap.session?.used).toBe(10);
     expect(snap.weekly?.used).toBe(20);
-    expect(snap.subModels?.find((m) => m.name === "opus")?.used).toBe(30);
+    expect(snap.subModels?.find((m) => m.name === "Opus · weekly")?.used).toBe(30);
     expect(
       snap.subModels?.find((m) => m.name === "extra_usage_USD")?.used,
     ).toBe(500);
@@ -126,7 +126,7 @@ describe("collectClaudeCode", () => {
     const snap = await collectClaudeCode({ platform: "darwin" });
     const names = snap.subModels?.map((m) => m.name);
     // Expected order: extra_usage_USD, opus, sonnet
-    expect(names).toEqual(["extra_usage_USD", "opus", "sonnet"]);
+    expect(names).toEqual(["extra_usage_USD", "Opus · weekly", "Sonnet · weekly"]);
   });
 
   it("returns error snapshot when keychain token is missing", async () => {

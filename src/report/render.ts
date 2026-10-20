@@ -86,7 +86,7 @@ export function renderReport(data: ReportData): string {
     ? `<div class="filters" id="filters"></div>
 <div class="tiles" id="tiles"></div>
 <div id="sources"></div>`
-    : `<section class="blank"><h2>还没有记录</h2><p>这段时间内没有采集到任何配额数据。菜单栏应用每 5 分钟刷新一次，跑一会儿再来看，或者先手动执行一次 <code>npx tsx scripts/export-json.ts --force</code>。</p></section>`;
+    : `<section class="blank"><h2>还没有记录</h2><p>这段时间内没有采集到任何配额数据。数据由后台服务采集：先运行 <code>quotacheck daemon</code>（macOS 上可用 <code>quotacheck install-service</code>），跑一会儿再来看。</p></section>`;
 
   return `<meta charset="utf-8">
 <title>Quota Ledger</title>
@@ -322,7 +322,7 @@ footer { font-size: 12px; color: var(--text-muted); border-top: 1px solid var(--
 
 ${body}
 
-<footer>每条曲线是阶梯线：一次读数保持到下一次读数为止，两次采集之间不插值。竖线标记观测到的配额重置，灰带表示采集失败的时段。时间范围只能在生成窗口（${data.days} 天）内选择；要看更早的数据，用更大的 <code>--days</code> 重新生成。原始记录保存在 <code>~/.config/quotacheck-mcp/history/</code>。</footer>
+<footer>每条曲线是阶梯线：一次读数保持到下一次读数为止，两次采集之间不插值。竖线标记观测到的配额重置，灰带表示采集失败的时段。时间范围只能在生成窗口（${data.days} 天）内选择；要看更早的数据，用更大的 <code>--days</code> 重新生成。原始记录保存在 <code>~/.config/quotacheck-mcp/observations/</code>（旧版记录在 <code>history/</code>）。</footer>
 </div>
 
 <noscript><p class="nojs" style="max-width:1120px;margin:0 auto;padding:0 24px 48px">这份报表的图表和表格由页面脚本按所选时间范围渲染，需要启用 JavaScript。</p></noscript>
@@ -440,9 +440,22 @@ ${body}
     return out;
   }
 
+  /**
+   * Readings visible in [a, b]. Runs of identical readings are embedded as
+   * their two endpoints only, so a reading taken before \`a\` still holds at
+   * \`a\` when a later reading exists; it is carried to the edge (and the last
+   * visible reading is carried to \`b\`) as a synthetic point, marked by p[5].
+   */
   function inRange(pts, a, b) {
-    return pts.filter(function (p) { return p[0] >= a && p[0] <= b; });
+    var out = [], i = 0;
+    while (i < pts.length && pts[i][0] < a) i++;
+    if (i > 0 && i < pts.length && pts[i][0] > a) out.push(held(pts[i - 1], a));
+    for (; i < pts.length && pts[i][0] <= b; i++) out.push(pts[i]);
+    if (out.length && i < pts.length && out[out.length - 1][0] < b) out.push(held(out[out.length - 1], b));
+    return out;
   }
+  function held(p, t) { var q = p.slice(0, 5); q[0] = t; q[5] = true; return q; }
+  function real(pts) { return pts.filter(function (p) { return !p[5]; }); }
 
   function chartSvg(pts, cycles, outages, a, b) {
     var i, parts = [];
@@ -649,7 +662,7 @@ ${body}
       attachHover(wrap, drawn);
       if (drawn.length < pts.length) {
         card.appendChild(el("p", "sampled",
-          "图上按峰值抽样至 " + drawn.length + " 点（区间内共 " + pts.length + " 条读数）；完整读数见下方刷新记录。"));
+          "图上按峰值抽样至 " + drawn.length + " 点（区间内共 " + pts.length + " 个读数变化点）；完整变化点见下方读数记录。"));
       }
     }
 
@@ -665,10 +678,13 @@ ${body}
           { text: c[2] ? fmt(Date.parse(c[2])) : "—" }];
       })));
 
-    var shown = pts.slice(-D.logCap).reverse();
-    tables.appendChild(tableBlock("刷新记录", pts.length,
-      pts.length > D.logCap ? "显示最近 " + D.logCap + " 条，共 " + pts.length + " 条。完整记录见 ~/.config/quotacheck-mcp/history/。" : null,
-      ["刷新时间", "已用", "剩余", "占比", "下次重置"],
+    // Consecutive identical readings were merged before embedding, so this is
+    // a log of value changes, not of every refresh.
+    var logged = real(pts);
+    var shown = logged.slice(-D.logCap).reverse();
+    tables.appendChild(tableBlock("读数记录", logged.length,
+      logged.length > D.logCap ? "显示最近 " + D.logCap + " 条，共 " + logged.length + " 条。连续相同的读数只保留首尾；完整记录用 quotacheck history 查询。" : "连续相同的读数只保留首尾两条；完整记录用 quotacheck history 查询。",
+      ["读数时间", "已用", "剩余", "占比", "下次重置"],
       shown.map(function (p) {
         return [{ text: fmtFull(p[0]) }, { text: num(p[2]), cls: "mono num" },
           { text: num(p[3]), cls: "mono num" }, { text: num(p[1]) + "%", cls: "mono num" },
@@ -694,7 +710,8 @@ ${body}
    * but an extra catch-all tile beside the real groups would just be noise.
    */
   function tilesFor(src) {
-    var order = [], byGroup = {};
+    // Group names come from collectors; "constructor" must not hit Object.prototype.
+    var order = [], byGroup = Object.create(null);
     src.series.forEach(function (s) {
       var g = s.group || "";
       if (!(g in byGroup)) { byGroup[g] = []; order.push(g); }
@@ -779,7 +796,7 @@ ${body}
       // Buckets with something to show lead; idle and empty ones settle below.
       // A shared-limit group moves as one block, so its weekly stays directly
       // above its short window even when only one of the two saw any usage.
-      var idle = {};
+      var idle = Object.create(null);
       cards.forEach(function (c) {
         var g = c.s.group || c.s.key;
         idle[g] = (g in idle ? idle[g] : true) && c.quiet;

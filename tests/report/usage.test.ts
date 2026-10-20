@@ -299,3 +299,30 @@ describe("buildUsageHistory", () => {
     expect(u.quotas[0].consumedPct).toBe(2);
   });
 });
+
+describe("rolling resets across a polling gap", () => {
+  it("does not invent a weekly reset when a rolling reset moves during a gap", () => {
+    // Gemini-style: the announced reset rolls forward, so after an 8-hour sleep it
+    // jumps by 8 hours without the window having reset.
+    const snaps = [
+      cc(0, { pct: 40, resetsAt: at(5 * DAY) }),
+      cc(8 * HOUR, { pct: 41, resetsAt: at(5 * DAY + 8 * HOUR) }),
+    ];
+    const q = usage(snaps).quotas[0];
+    expect(q.cycles).toHaveLength(1);
+    expect(q.consumedPct).toBe(1);
+  });
+});
+
+describe("model-scoped weekly quotas", () => {
+  it("names each one and does not borrow the account-wide session", () => {
+    const snap = (offsetMs: number, opus: number): QuotaSnapshot => ({
+      ...cc(offsetMs, { pct: 20, resetsAt: WEEK1 }, { pct: 10, resetsAt: at(offsetMs + 4 * HOUR) }),
+      subModels: [{ name: "Opus · weekly", used: opus, limit: 100, pct: opus, resetsAt: WEEK1 }],
+    });
+    const h = usage([snap(0, 70), snap(HOUR, 80)]);
+    expect(h.quotas.map((q) => q.name)).toEqual(["claude-code", "claude-code · Opus · weekly"]);
+    const opus = h.quotas[1];
+    expect(opus.cycles.flatMap((c) => c.days).flatMap((d) => d.sessions)).toHaveLength(0);
+  });
+});

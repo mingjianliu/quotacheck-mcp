@@ -75,7 +75,7 @@ export interface BuildOptions {
 export const DEFAULT_MAX_POINTS = 600;
 
 /** Absolute floor on what counts as a reset, so noise near zero is ignored. */
-const MIN_RESET_DROP = 20;
+export const MIN_RESET_DROP = 20;
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -202,16 +202,37 @@ function summarise(points: SeriesPoint[]): Cycle {
   };
 }
 
+/** Announced resets this far apart are different cycles, not jitter. */
+const STALE_RESET_MS = 60 * 60 * 1000;
+
+function resetOf(p: SeriesPoint): number {
+  return p.resetsAt ? Date.parse(p.resetsAt) : NaN;
+}
+
+/**
+ * Around a reset some sources alternate between the old cycle's reading and
+ * the new one's for minutes. A reading announcing an earlier reset than the
+ * cycle already seen is such a stale flap: it stays on the chart but does not
+ * open a cycle or count towards one, or every flap would read as a reset.
+ */
 export function splitCycles(points: SeriesPoint[]): Cycle[] {
   if (points.length === 0) return [];
   const cycles: Cycle[] = [];
   let current: SeriesPoint[] = [points[0]];
+  let prev = points[0];
+  let announced = resetOf(prev);
   for (let i = 1; i < points.length; i++) {
-    if (isCycleBoundary(points[i - 1], points[i])) {
+    const p = points[i];
+    const reset = resetOf(p);
+    if (!Number.isNaN(reset) && reset < announced - STALE_RESET_MS) continue;
+    if (isCycleBoundary(prev, p)) {
       cycles.push(summarise(current));
       current = [];
+      announced = NaN;
     }
-    current.push(points[i]);
+    current.push(p);
+    prev = p;
+    if (!Number.isNaN(reset) && !(reset <= announced)) announced = reset;
   }
   cycles.push(summarise(current));
   return cycles;

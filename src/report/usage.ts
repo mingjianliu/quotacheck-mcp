@@ -1,5 +1,5 @@
 import type { QuotaSnapshot, SourceId } from "../types.js";
-import { buildReport, type Series, type SeriesPoint } from "./aggregate.js";
+import { buildReport, MIN_RESET_DROP, type Series, type SeriesPoint } from "./aggregate.js";
 
 const MIN_MS = 60_000;
 const HOUR_MS = 60 * MIN_MS;
@@ -119,7 +119,13 @@ function splitByReset(
     if (cur && resetsAt < cur.resetsAt - toleranceMs) continue;
 
     const rollingIdle = cur !== undefined && cur.peak === 0 && p.pct === 0;
-    if (!cur || (resetsAt > cur.resetsAt + toleranceMs && !rollingIdle)) {
+    // A rolling window announces a later reset after any gap in polling, so a
+    // later reset alone is not a new cycle: time must have reached the old
+    // one, or usage must have collapsed.
+    const last = cur?.points.at(-1);
+    const reset = cur !== undefined && (p.t >= cur.resetsAt - toleranceMs ||
+      (last !== undefined && last.pct - p.pct >= Math.max(MIN_RESET_DROP, last.pct * 0.5)));
+    if (!cur || (resetsAt > cur.resetsAt + toleranceMs && !rollingIdle && reset)) {
       cur = { resetsAt, start: p.t, peak: 0, points: [] };
       out.push(cur);
     } else if (resetsAt > cur.resetsAt) {
@@ -193,9 +199,12 @@ export function buildUsageHistory(
           spent.reduce((n, s) => (s.t >= from && s.t < to ? n + s.pct : n), 0),
         );
 
-      const sessionSeries = src.series.find(
-        (s) => isSession(s) && s.group === weekly.group,
-      );
+      // A model-scoped weekly (Claude's "Opus · weekly") has no session window of
+      // its own; pairing it with the account-wide session would misattribute it.
+      const scoped = weekly.kind !== "weekly" && !weekly.group;
+      const sessionSeries = scoped
+        ? undefined
+        : src.series.find((s) => isSession(s) && s.group === weekly.group);
       const sessions = sessionSeries
         ? splitByReset(sessionSeries.points, SESSION_TOLERANCE_MS, true).filter(
             (c) => c.peak > 0,
@@ -256,7 +265,11 @@ export function buildUsageHistory(
       quotas.push({
         source: src.source,
         group: weekly.group,
-        name: weekly.group ? `${src.source} · ${weekly.group}` : src.source,
+        name: weekly.group
+          ? `${src.source} · ${weekly.group}`
+          : scoped
+            ? `${src.source} · ${weekly.label}`
+            : src.source,
         usedPct: latest.pct,
         remainingPct: round1(100 - latest.pct),
         nextResetAt: cycles[cycles.length - 1].resetsAt,

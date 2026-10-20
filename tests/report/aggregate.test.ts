@@ -390,3 +390,13 @@ describe("buildReport embedding", () => {
     expect(r.maxPoints).toBe(50);
   });
 });
+
+describe("cycle splitting around a reset", () => {
+  it("counts readings that flap between the old and new cycle once", () => {
+    const R1 = at(2 * HOUR), R2 = at(7 * HOUR);
+    const snaps = [cc(0, 80, R1), cc(2 * HOUR + MIN, 0, R2), cc(2 * HOUR + 2 * MIN, 80, R1), cc(2 * HOUR + 3 * MIN, 0, R2), cc(2 * HOUR + 4 * MIN, 80, R1), cc(2 * HOUR + 5 * MIN, 5, R2)];
+    const series = report(snaps).sources[0].series[0];
+    expect(series.cycles).toHaveLength(2);
+    expect(series.cycles[1].peakPct).toBe(5);
+  });
+});

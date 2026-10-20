@@ -2,14 +2,15 @@ import { normalizeSnapshot, stableHash, toLegacySnapshot, redact, type QuotaLimi
 import type { QuotaSnapshot } from './types.js';
 function object(v: unknown): v is Record<string, unknown> { return !!v && typeof v === 'object' && !Array.isArray(v); }
 function number(v: unknown): v is number { return typeof v === 'number' && Number.isFinite(v); }
+// Labels match the "<display_name> · weekly" form the same limits get from `limits[]`.
 const aliases: Record<string, [
     string,
     string,
     string
 ]> = {
     five_hour: ['session', 'Session', 'session'], seven_day: ['weekly', 'Weekly', 'weekly'],
-    seven_day_opus: ['model:opus:weekly', 'opus', 'weekly'], seven_day_sonnet: ['model:sonnet:weekly', 'sonnet', 'weekly'],
-    seven_day_omelette: ['model:claude-design:weekly', 'claude design', 'weekly'],
+    seven_day_opus: ['model:opus:weekly', 'Opus · weekly', 'weekly'], seven_day_sonnet: ['model:sonnet:weekly', 'Sonnet · weekly', 'weekly'],
+    seven_day_omelette: ['model:claude-design:weekly', 'Claude Design · weekly', 'weekly'],
 };
 export function parseClaudeUsage(raw: unknown, observedAt: string): QuotaSnapshot {
     if (!object(raw))

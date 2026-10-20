@@ -3,19 +3,17 @@ import { loadConfig } from './config.js';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
-import { writeFileSync, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { parseCli } from './cli-args.js';
 import { callTool, refreshSources } from './tools.js';
-import { getLegacyQuotas } from './query.js';
-import { ObservationStore, privateDirectory } from './store.js';
-import { readHistory } from './history.js';
-import { buildReport } from './report/aggregate.js';
-import { renderReport } from './report/render.js';
+import { FilterSchema, getLegacyQuotas } from './query.js';
+import { ObservationStore } from './store.js';
+import { writeReport } from './report/write.js';
 async function main() {
     const { command, input, home: given, id } = parseCli(process.argv.slice(2));
     const home = given ?? process.env.QUOTACHECK_HOME ?? homedir();
     if (command === 'help' || command === '--help') {
-        console.log('quotacheck <quotas|history|status|refresh|legacy|daemon|install-service|report|export> [--home PATH]\n  history --from ISO --to ISO [--granularity raw|5m|30m|1h|1d] [--page-size N] [--cursor TOKEN] [--include-raw]\n  quotas/history: --sources ID,... --account-keys KEY,... --limit-ids ID,...\n  report --days N; export OBSERVATION_ID (redacted raw JSON)');
+        console.log('quotacheck <quotas|history|status|refresh|legacy|daemon|install-service|report|export> [--home PATH]\n  history --from ISO --to ISO [--granularity raw|5m|30m|1h|1d] [--page-size N] [--cursor TOKEN] [--include-raw]\n  quotas/history: --sources ID,... --account-keys KEY,... --limit-ids ID,...\n  report [--days N] [--sources ID,...] [--out FILE] [--max-points N]; export OBSERVATION_ID (redacted raw JSON)');
         return;
     }
     if (command === 'daemon') {
@@ -44,12 +42,8 @@ async function main() {
         return;
     }
     if (command === 'report') {
-        const days = Number(input.days ?? 30), until = new Date(), since = new Date(until.getTime() - days * 86400000);
-        const data = buildReport(readHistory(home, { since, until }), { since, until, days });
-        const dir = join(home, '.config', 'quotacheck-mcp', 'reports');
-        privateDirectory(dir);
-        const path = join(dir, `quota-${days}d.html`);
-        writeFileSync(path, renderReport(data), { mode: 0o600 });
+        const sources = input.sources === undefined ? undefined : FilterSchema.pick({ sources: true }).parse({ sources: input.sources }).sources;
+        const { path } = writeReport(home, { days: Number(input.days ?? 30), sources, out: input.out as string | undefined, maxPoints: input.maxPoints as number | undefined });
         console.log(path);
         return;
     }

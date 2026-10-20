@@ -1,10 +1,7 @@
-import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/config.js";
-import { readHistory } from "../src/history.js";
-import { buildReport, DEFAULT_MAX_POINTS } from "../src/report/aggregate.js";
-import { renderReport } from "../src/report/render.js";
+import { DEFAULT_MAX_POINTS } from "../src/report/aggregate.js";
+import { writeReport } from "../src/report/write.js";
 import { ALL_SOURCES, type SourceId } from "../src/types.js";
 
 function flag(name: string, fallback?: string): string | undefined {
@@ -37,29 +34,19 @@ if (rawSources) {
   sources = parts as SourceId[];
 }
 
-const home = process.env.QUOTACHECK_HOME ?? homedir();
+const home = flag("home") ?? process.env.QUOTACHECK_HOME ?? homedir();
 const cfg = loadConfig({ homeDir: home });
 if (!cfg.historyEnabled) {
   console.warn("warning: historyEnabled is false in config.json — nothing new is being recorded.");
 }
 
-const until = new Date();
-const since = new Date(until.getTime() - days * 24 * 60 * 60 * 1000);
-
-const snapshots = readHistory(home, { since, until, sources });
-const data = buildReport(snapshots, { since, until, days, maxPoints, generatedAt: until });
-
-const out = resolve(
-  flag("out") ?? join(home, ".config", "quotacheck-mcp", "reports", `quota-${days}d.html`),
-);
-mkdirSync(dirname(out), { recursive: true });
-writeFileSync(out, renderReport(data), "utf8");
+const { path: out, data, snapshots } = writeReport(home, { days, sources, out: flag("out"), maxPoints });
 
 const buckets = data.sources.reduce((n, s) => n + s.series.length, 0);
 console.log(
-  `${snapshots.length} 条记录 · ${data.sources.length} 个源 · ${buckets} 个配额桶 · 最近 ${days} 天`,
+  `${snapshots} 条记录 · ${data.sources.length} 个源 · ${buckets} 个配额桶 · 最近 ${days} 天`,
 );
-if (snapshots.length === 0) {
+if (snapshots === 0) {
   console.log(
     "history is empty — start `quotacheck daemon` or install the background service.",
   );

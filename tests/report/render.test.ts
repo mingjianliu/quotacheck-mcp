@@ -165,6 +165,30 @@ describe("renderReport", () => {
     );
   });
 
+  it("carries a held reading into a range that falls inside a run", () => {
+    // Seven days flat at 30% then 45%: run collapsing embeds only four points.
+    const snaps: QuotaSnapshot[] = [];
+    for (let t = T0; t < T0 + 168 * HOUR; t += HOUR / 12) {
+      const pct = t < T0 + 84 * HOUR ? 30 : 45;
+      snaps.push({ source: "codex", collectedAt: new Date(t).toISOString(), weekly: { used: pct, limit: 100, pct } });
+    }
+    const out = html(snaps);
+    const pts = payloadOf(out).sources[0].series[0].pts;
+    expect(pts).toHaveLength(4);
+    const fn = out.match(/function inRange[\s\S]*?function real\(pts\) \{[^\n]*\}/)![0];
+    const { inRange, real } = new Function(`${fn}; return { inRange, real };`)();
+    const shown = inRange(pts, T0 + 24 * HOUR, T0 + 72 * HOUR);
+    expect(shown.map((p: unknown[]) => [p[0], p[1]])).toEqual([[T0 + 24 * HOUR, 30], [T0 + 72 * HOUR, 30]]);
+    expect(real(shown)).toHaveLength(0);
+    // A series that ended before the range is not carried into it.
+    expect(inRange(pts, T0 + 200 * HOUR, T0 + 300 * HOUR)).toHaveLength(0);
+  });
+
+  it("survives group names that collide with Object.prototype", () => {
+    const out = html([{ source: "antigravity", collectedAt: new Date(T0).toISOString(), subModels: [{ name: "constructor · Weekly", group: "constructor", used: 5, limit: 100, pct: 5 }] }]);
+    expect(out).toContain("Object.create(null)");
+  });
+
   it("renders an empty state rather than a blank page", () => {
     const out = html([]);
     expect(out).toMatch(/还没有/);
