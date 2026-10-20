@@ -95,3 +95,53 @@ describe("legacy buckets and limits agree", () => {
     expect(antigravityLimits(out).map((l) => [l.label, l.measurement.utilizationPct])).toEqual([["Gemini · Weekly", 20], ["Gemini · 5-hour", 50]]);
   });
 });
+
+describe("agy --output-format json", () => {
+  // `agy -p /usage --output-format json` as agy 1.3.1 prints it, long descriptions
+  // shortened; from Agent HUD's AntigravityCLITests (jazzenchen/agent-hud-open, Apache-2.0).
+  const PRINTED = {"conversation_id":"","status":"SUCCESS","response":"Gemini Models\tWeekly Limit Remaining\t75%\t2026-10-20T04:42:34Z","num_turns":0,
+    "usage":{"input_tokens":0,"output_tokens":0,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":0},
+    "command":{"name":"usage","data":{"description":"Within each group, models share a weekly limit and a 5-hour limit.","groups":[
+      {"name":"Gemini Models","description":"Models within this group: Gemini Flash, Gemini Pro","buckets":[
+        {"id":"gemini-weekly","name":"Weekly Limit Remaining","description":"It will fully refresh in 5 days.","window":"weekly","remaining_fraction":0.75,"reset_time":"2026-10-20T04:42:34Z"},
+        {"id":"gemini-5h","name":"Five Hour Limit Remaining","description":null,"window":"5h","remaining_fraction":1,"reset_time":"2026-10-15T07:05:34Z"}]},
+      {"name":"Claude and GPT models","description":"Models within this group: Claude Opus, Claude Sonnet, GPT-OSS","buckets":[
+        {"id":"3p-weekly","name":"Weekly Limit Remaining","description":null,"window":"weekly","remaining_fraction":0.5,"reset_time":"2026-10-19T15:09:23Z"},
+        {"id":"3p-5h","name":"Five Hour Limit Remaining","description":null,"window":"5h","remaining_fraction":0,"reset_time":"2026-10-15T07:05:34Z"}]}]}}};
+
+  it("reads every group's buckets with the same ids the text table gave", async () => {
+    const { agyUsageRows, antigravityLimitsFromRows, antigravityLimits } = await import("../../src/source-mapping.js");
+    const rows = agyUsageRows(PRINTED)!;
+    const limits = antigravityLimitsFromRows(rows);
+    expect(limits.map((l) => [l.id, l.measurement.utilizationPct, l.window.resetsAt])).toEqual([
+      ["group:Gemini Models:weekly", 25, "2026-10-20T04:42:34Z"],
+      ["group:Gemini Models:session", 0, "2026-10-15T07:05:34Z"],
+      ["group:Claude and GPT models:weekly", 50, "2026-10-19T15:09:23Z"],
+      ["group:Claude and GPT models:session", 100, "2026-10-15T07:05:34Z"],
+    ]);
+    // Same id as the /quota table produced, so history continues across the switch.
+    expect(antigravityLimits("Gemini Models\tWeekly Limit Remaining\t75%\t2026-10-20T04:42:34Z")[0].id).toBe(limits[0].id);
+    expect(limits[0].provenance.identity).toBe("stable");
+  });
+
+  it("is not mistaken for other output", async () => {
+    const { agyUsageRows } = await import("../../src/source-mapping.js");
+    expect(agyUsageRows({ status: "ERROR" })).toBeUndefined();
+    expect(agyUsageRows("Gemini\tWeekly\t5%")).toBeUndefined();
+  });
+});
+
+describe("collectAntigravity", () => {
+  const agy = `${process.cwd()}/tests/fixtures/fake-agy.mjs`;
+  it("prefers the JSON summary and falls back to the /quota table on older agy", async () => {
+    const { collectAntigravity } = await import("../../src/collectors/antigravity.js");
+    for (const mode of ["new", "old"]) {
+      process.env.FAKE_AGY_MODE = mode;
+      const snap = await collectAntigravity({ antigravityUsageBinary: agy });
+      expect(snap.error).toBeUndefined();
+      expect(snap.limits?.map((l) => [l.id, l.measurement.utilizationPct])).toEqual([["group:Gemini Models:weekly", 60]]);
+      expect(Object.keys(snap.raw as object)).toEqual([mode === "new" ? "usage" : "quotaTable"]);
+    }
+    delete process.env.FAKE_AGY_MODE;
+  });
+});

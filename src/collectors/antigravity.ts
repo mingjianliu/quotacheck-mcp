@@ -1,27 +1,26 @@
-import { agyRows, agyWindowKind, antigravityLimits } from '../source-mapping.js';
+import { agyRows, agyUsageRows, agyWindowKind, antigravityLimitsFromRows, type AgyRow } from '../source-mapping.js';
 import { execFile } from "node:child_process";
 import type { Collector, CollectorContext, QuotaSnapshot, SubModelBucket } from "../types.js";
 
 /**
  * Antigravity quota comes from the `agy` CLI, not the local language server.
  *
- * The language server's GetUserStatus does expose a `quotaInfo.remainingFraction`
- * per model, but every model in a group reports the same number because the
- * limit is per *group*, not per model — and it only ever reflects the 5-hour
- * window. The weekly limit, the one that actually runs out, is absent from it,
- * and none of the 237 RPC methods exposes it.
+ * The language server's GetUserStatus only reflects the 5-hour window, and
+ * its RetrieveUserQuotaSummary (which does carry the weekly limit) on agy's
+ * own server needs a CSRF token that no command line shows. Asking `agy`
+ * works whether or not Antigravity.app is running.
  *
- * `agy -p "/quota"` prints both windows for both groups as tab-separated rows.
- * Slash commands expand in print mode, so this costs no model tokens, and it
- * works whether or not Antigravity.app is running — the RPC needed a live
- * language server process to read a port and CSRF token from.
+ * `agy -p /usage --output-format json` (agy 1.1.11+) prints the summary's
+ * groups and buckets as JSON; older builds fall back to the tab-separated
+ * `agy -p "/quota"` table. Slash commands expand in print mode, so neither
+ * costs model tokens.
  */
 const PRINT_TIMEOUT_S = 60;
 const EXEC_TIMEOUT_MS = 75_000;
 
 /** "Five Hour Limit Remaining" -> "5-hour". Unknown labels keep their first word. */
-function windowLabel(raw: string): string {
-  const kind = agyWindowKind(raw.trim());
+function windowLabel(raw: string, period?: string): string {
+  const kind = agyWindowKind(raw.trim(), period);
   if (kind === "weekly") return "Weekly";
   if (kind === "session") return "5-hour";
   const first = raw.trim().split(/\s+/)[0];
@@ -48,10 +47,14 @@ function round2(n: number): number {
  * progress chatter alongside the table.
  */
 export function parseQuotaOutput(raw: string): SubModelBucket[] {
+  return bucketsFromRows(agyRows(raw));
+}
+
+function bucketsFromRows(rows: AgyRow[]): SubModelBucket[] {
   const out: Array<SubModelBucket & { _rank: number; _group: string }> = [];
 
-  for (const { group, window, remaining, reset } of agyRows(raw)) {
-    const label = windowLabel(window);
+  for (const { group, window, remaining, reset, period } of rows) {
+    const label = windowLabel(window, period);
     const used = round2(100 - remaining);
     out.push({
       name: `${group} · ${label}`,
@@ -69,10 +72,10 @@ export function parseQuotaOutput(raw: string): SubModelBucket[] {
   return out.map(({ _rank, _group, ...bucket }) => bucket);
 }
 
-function runAgy(binary: string, signal?: AbortSignal): Promise<string> {
+function runAgy(binary: string, args: string[], signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
-      binary, ["-p", "/quota", "--print-timeout", `${PRINT_TIMEOUT_S}s`],
+      binary, args,
       { timeout: EXEC_TIMEOUT_MS, maxBuffer: 1024 * 1024, signal },
       (err, stdout, stderr) => {
         // A non-zero exit with usable rows on stdout still beats reporting a
@@ -94,14 +97,28 @@ export async function collectAntigravity(
   const binary = ctx?.antigravityUsageBinary || "agy";
 
   try {
-    const stdout = await runAgy(binary,ctx?.signal);
-    const subModels = parseQuotaOutput(stdout);
-    if (subModels.length === 0) {
+    // agy 1.1.11+ prints its quota summary as JSON; older builds only have the /quota table.
+    let rows: AgyRow[] | undefined, raw: Record<string, unknown>;
+    let json: unknown;
+    try {
+      json = JSON.parse(await runAgy(binary, ["-p", "/usage", "--output-format", "json"], ctx?.signal));
+      rows = agyUsageRows(json);
+    } catch (e) {
+      if (ctx?.signal?.aborted) throw e;
+    }
+    if (rows?.length) {
+      raw = { usage: json };
+    } else {
+      const table = await runAgy(binary, ["-p", "/quota", "--print-timeout", `${PRINT_TIMEOUT_S}s`], ctx?.signal);
+      rows = agyRows(table);
+      raw = { quotaTable: table };
+    }
+    if (rows.length === 0) {
       throw new Error(
-        `No quota rows in \`${binary} -p "/quota"\` output. Is the Antigravity CLI installed and signed in?`,
+        `No quota rows in \`${binary} -p /usage\` or \`${binary} -p /quota\` output. Is the Antigravity CLI installed and signed in?`,
       );
     }
-    return { source: "antigravity", collectedAt, subModels, limits: antigravityLimits(stdout), raw: { quotaTable: stdout }, extensions: {quotaTable:stdout} };
+    return { source: "antigravity", collectedAt, subModels: bucketsFromRows(rows), limits: antigravityLimitsFromRows(rows), raw, extensions: raw };
   } catch (e) {
     return {
       source: "antigravity",
