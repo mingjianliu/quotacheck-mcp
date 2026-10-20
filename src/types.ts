@@ -39,6 +39,8 @@ export interface QuotaSnapshot {
   extensions?: Record<string, unknown>;
   raw?: unknown;
   accountKey?: string;
+  /** Human-readable account, e.g. a masked email; never the identifier itself. */
+  accountLabel?: string;
   collectionError?: CollectionError;
 }
 

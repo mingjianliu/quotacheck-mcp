@@ -46,6 +46,9 @@ export interface Outage {
 
 export interface SourceReport {
   source: SourceId;
+  /** Set when the source identified the signed-in account; one report per account. */
+  accountKey?: string;
+  accountLabel?: string;
   series: Series[];
   outages: Outage[];
   eventCount: number;
@@ -272,16 +275,23 @@ export function buildReport(
     (a, b) => Date.parse(a.collectedAt) - Date.parse(b.collectedAt),
   );
 
-  const bySource = new Map<SourceId, QuotaSnapshot[]>();
+  // Readings from different accounts are different quotas. A failure rarely
+  // knows its account, so it is filed under the account last seen for its source.
+  const bySource = new Map<string, { source: SourceId; accountKey?: string; accountLabel?: string; events: QuotaSnapshot[] }>();
+  const current = new Map<SourceId, string | undefined>();
   for (const s of ordered) {
-    const list = bySource.get(s.source) ?? [];
-    list.push(s);
-    bySource.set(s.source, list);
+    const accountKey = s.accountKey ?? (s.error ? current.get(s.source) : undefined);
+    if (!s.error) current.set(s.source, s.accountKey);
+    const id = `${s.source}\u0000${accountKey ?? ""}`;
+    const entry = bySource.get(id) ?? { source: s.source, accountKey, events: [] };
+    if (s.accountLabel) entry.accountLabel = s.accountLabel;
+    entry.events.push(s);
+    bySource.set(id, entry);
   }
 
   const sources: SourceReport[] = [];
 
-  for (const [source, events] of bySource) {
+  for (const { source, accountKey, accountLabel, events } of bySource.values()) {
     const raw = new Map<
       string,
       { kind: SeriesKind; label: string; group?: string; points: SeriesPoint[] }
@@ -337,7 +347,7 @@ export function buildReport(
         // Lossless only: the range picker needs full detail to zoom into.
         const points = collapseRuns(entry.points);
         return {
-          key: `${source}:${key}`,
+          key: `${source}:${accountKey ? `${accountKey}:` : ""}${key}`,
           source,
           kind: entry.kind,
           label: entry.label,
@@ -359,6 +369,8 @@ export function buildReport(
 
     sources.push({
       source,
+      ...(accountKey ? { accountKey } : {}),
+      ...(accountLabel ? { accountLabel } : {}),
       series,
       outages,
       eventCount: events.length,
@@ -367,7 +379,10 @@ export function buildReport(
     });
   }
 
-  sources.sort((a, b) => a.source.localeCompare(b.source));
+  // Within a source, the account read most recently (the current login) leads.
+  sources.sort((a, b) =>
+    a.source.localeCompare(b.source) ||
+    (b.lastCollectedAt ?? 0) - (a.lastCollectedAt ?? 0));
 
   return {
     generatedAt: (opts.generatedAt ?? new Date()).toISOString(),

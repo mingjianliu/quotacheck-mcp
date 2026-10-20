@@ -188,6 +188,9 @@ export function buildUsageHistory(
 
   const quotas: QuotaUsage[] = [];
   for (const src of report.sources) {
+    const base = src.accountKey
+      ? `${src.source} (${src.accountLabel ?? src.accountKey})`
+      : src.source;
     for (const weekly of src.series.filter(isWeekly)) {
       const cycles = splitByReset(weekly.points, WEEKLY_TOLERANCE_MS);
       const latest = cycles[cycles.length - 1]?.points.at(-1);
@@ -266,10 +269,10 @@ export function buildUsageHistory(
         source: src.source,
         group: weekly.group,
         name: weekly.group
-          ? `${src.source} · ${weekly.group}`
+          ? `${base} · ${weekly.group}`
           : scoped
-            ? `${src.source} · ${weekly.label}`
-            : src.source,
+            ? `${base} · ${weekly.label}`
+            : base,
         usedPct: latest.pct,
         remainingPct: round1(100 - latest.pct),
         nextResetAt: cycles[cycles.length - 1].resetsAt,

@@ -47,8 +47,9 @@ function payload(data: ReportData) {
     totalEvents: data.totalEvents,
     logCap: MAX_LOG_ROWS,
     sources: data.sources.map((src: SourceReport) => ({
-      id: src.source,
-      label: SOURCE_LABELS[src.source] ?? src.source,
+      id: src.accountKey ? `${src.source}:${src.accountKey}` : src.source,
+      label: (SOURCE_LABELS[src.source] ?? src.source) +
+        (src.accountKey ? ` · ${src.accountLabel ?? src.accountKey}` : ""),
       eventCount: src.eventCount,
       errorCount: src.errorCount,
       outages: src.outages.map((o) => [o.from, o.to, o.error]),

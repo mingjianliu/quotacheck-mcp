@@ -1,4 +1,5 @@
 import { codexLimits } from '../source-mapping.js';
+import { stableHash } from '../observation.js';
 import { spawn } from "node:child_process";
 import type {
   Bucket,
@@ -42,8 +43,17 @@ export interface AccountRateLimits {
   rateLimitsByLimitId?: Record<string, RateLimitSnapshot> | null;
 }
 
+/** `account/read` result: who `codex login` is currently signed in as. */
+export interface CodexAccount {
+  type: string;
+  email?: string | null;
+  planType?: string;
+}
+
 const INIT_ID = 1;
 const READ_ID = 2;
+const ACCOUNT_ID = 3;
+const ACCOUNT_GRACE_MS = 2_000;
 const RPC_TIMEOUT_MS = 20_000;
 const CLIENT_NAME = "quotacheck-mcp";
 const CLIENT_VERSION = "0.1.0";
@@ -132,7 +142,34 @@ export function parseRateLimits(
   };
 }
 
-function readRateLimits(binary: string, signal?: AbortSignal): Promise<AccountRateLimits> {
+/**
+ * Stable key for the signed-in account, so readings from different logins are
+ * never merged. The email itself is hashed, not stored.
+ */
+export function codexAccountKey(account: CodexAccount | undefined): string | undefined {
+  if (!account || typeof account.type !== "string") return undefined;
+  const email = typeof account.email === "string" ? account.email.trim().toLowerCase() : "";
+  if (account.type === "chatgpt") return email ? `chatgpt:${stableHash(email)}` : undefined;
+  return account.type;
+}
+
+/** "mingjian@gmail.com" + plus -> "m…@gmail.com · plus": enough to tell your own accounts apart. */
+export function codexAccountLabel(account: CodexAccount | undefined): string | undefined {
+  if (!account || typeof account.type !== "string") return undefined;
+  if (account.type !== "chatgpt") return account.type;
+  const email = typeof account.email === "string" ? account.email.trim() : "";
+  const at = email.indexOf("@");
+  if (at < 1) return undefined;
+  const masked = `${email[0]}…${email.slice(at)}`;
+  return account.planType ? `${masked} · ${account.planType}` : masked;
+}
+
+interface CodexRead {
+  limits: AccountRateLimits;
+  account?: CodexAccount;
+}
+
+function readRateLimits(binary: string, signal?: AbortSignal): Promise<CodexRead> {
   return new Promise((resolve, reject) => {
     const child = spawn(binary, ["app-server"], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -142,6 +179,13 @@ function readRateLimits(binary: string, signal?: AbortSignal): Promise<AccountRa
     let settled = false;
     let stdout = "";
     let stderr = "";
+    let limits: AccountRateLimits | undefined;
+    // undefined: not answered yet; null: answered without a usable account.
+    let account: CodexAccount | null | undefined;
+    const done = () => {
+      if (limits !== undefined && account !== undefined)
+        finish(() => resolve({ limits: limits!, ...(account ? { account } : {}) }));
+    };
 
     const finish = (act: () => void) => {
       if (settled) return;
@@ -214,6 +258,12 @@ function readRateLimits(binary: string, signal?: AbortSignal): Promise<AccountRa
             method: "account/rateLimits/read",
             params: null,
           });
+          // Identity is best effort: a CLI without account/read still reports quota.
+          send({ id: ACCOUNT_ID, method: "account/read", params: { refreshToken: false } });
+        } else if (msg.id === ACCOUNT_ID) {
+          const a = (msg.result as { account?: CodexAccount | null } | undefined)?.account;
+          account = !msg.error && a && typeof a === "object" ? a : null;
+          done();
         } else if (msg.id === READ_ID) {
           if (msg.error) {
             finish(() =>
@@ -225,8 +275,10 @@ function readRateLimits(binary: string, signal?: AbortSignal): Promise<AccountRa
             );
             return;
           }
-          finish(() => resolve(msg.result as AccountRateLimits));
-          return;
+          limits = msg.result as AccountRateLimits;
+          // Never trade the quota reading for identity: give account/read a moment, no more.
+          if (account === undefined) setTimeout(() => { account ??= null; done(); }, ACCOUNT_GRACE_MS);
+          done();
         }
       }
     });
@@ -243,7 +295,7 @@ export async function collectCodex(
   ctx?: Pick<CollectorContext, "codexBinary" | "signal">,
   opts: {
     now?: Date;
-    read?: (binary: string) => Promise<AccountRateLimits>;
+    read?: (binary: string) => Promise<AccountRateLimits | CodexRead>;
   } = {},
 ): Promise<QuotaSnapshot> {
   const collectedAt = (opts.now ?? new Date()).toISOString();
@@ -251,7 +303,8 @@ export async function collectCodex(
   const read = opts.read ?? readRateLimits;
 
   try {
-    const raw = opts.read ? await read(binary) : await readRateLimits(binary,ctx?.signal);
+    const result = opts.read ? await read(binary) : await readRateLimits(binary,ctx?.signal);
+    const { limits: raw, account } = "limits" in result ? result : { limits: result, account: undefined };
     const parsed = parseRateLimits(raw);
     if (!parsed.session && !parsed.weekly && !parsed.subModels) {
       // A signed-out CLI answers with an empty snapshot. Passing that off as a
@@ -260,7 +313,10 @@ export async function collectCodex(
         `\`${binary} app-server\` reported no rate limit window. Is the Codex CLI signed in?`,
       );
     }
-    return { source: "codex", collectedAt, ...parsed, limits: codexLimits(raw), extensions: { response: raw }, raw };
+    const accountKey = codexAccountKey(account);
+    const label = codexAccountLabel(account);
+    return { source: "codex", collectedAt, ...parsed, limits: codexLimits(raw), ...(accountKey ? { accountKey } : {}),
+      extensions: { response: raw, ...(account ? { account: { type: account.type, planType: account.planType, ...(label ? { label } : {}) } } : {}) }, raw };
   } catch (e) {
     return { source: "codex", collectedAt, error: (e as Error).message };
   }

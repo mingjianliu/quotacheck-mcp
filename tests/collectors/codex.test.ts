@@ -162,3 +162,24 @@ describe("collectCodex", () => {
     expect(seen).toBe("/opt/bin/codex");
   });
 });
+
+describe("account identity", () => {
+  const read = (email: string) => async () => ({ limits: SAMPLE, account: { type: "chatgpt", email, planType: "plus" } });
+
+  it("keys readings by a hash of the signed-in email and never stores the email", async () => {
+    const a = await collectCodex(undefined, { now: new Date(0), read: read("Someone@Example.com") });
+    const b = await collectCodex(undefined, { now: new Date(0), read: read("someone@example.com") });
+    const c = await collectCodex(undefined, { now: new Date(0), read: read("other@example.com") });
+    expect(a.accountKey).toMatch(/^chatgpt:[0-9a-f]{24}$/);
+    expect(a.accountKey).toBe(b.accountKey);
+    expect(c.accountKey).not.toBe(a.accountKey);
+    expect(a.extensions?.account).toEqual({ type: "chatgpt", planType: "plus", label: "S…@Example.com · plus" });
+    expect(JSON.stringify(a)).not.toContain("Someone@");
+  });
+
+  it("still reports quota when the CLI cannot say who is signed in", async () => {
+    const snap = await collectCodex(undefined, { now: new Date(0), read: async () => SAMPLE });
+    expect(snap.error).toBeUndefined();
+    expect(snap.accountKey).toBeUndefined();
+  });
+});

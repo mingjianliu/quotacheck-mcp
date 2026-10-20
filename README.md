@@ -142,7 +142,7 @@ The API distinguishes source-reported values from derived and legacy values.
 Percentage-only limits do not claim absolute consumption counts. Known aliases share
 stable semantic IDs; unrecognized source paths and scopes without stable identifiers
 are marked with weak identity. Account identity is `unknown` unless a source supplies
-it; do not assume historical data spanning a login change belongs to one account.
+it (Codex does, from `account/read`); do not assume historical data spanning a login change belongs to one account.
 
 ### Structured queries
 
@@ -336,7 +336,7 @@ Ensure you have logged in using `claude` CLI. Verify the keychain contains an it
 ```
 Run `codex login` (or `codex doctor`) and confirm the account is a plan that meters Codex usage. An API-key-only login has no rate-limit snapshot to report.
 
-After switching Codex accounts, the next collection reads the new account. If a collection ran mid-switch and failed authentication, press refresh in the menu bar (or run `quotacheck refresh --sources codex`) rather than waiting for the hourly retry. History does not yet record which account a reading came from, so charts spanning a switch mix both accounts.
+After switching Codex accounts, the next collection reads the new account. If a collection ran mid-switch and failed authentication, press refresh in the menu bar (or run `quotacheck refresh --sources codex`) rather than waiting for the hourly retry. Each reading records which account it came from (a hash of the login email, never the email itself), so reports and `get_usage_history` show each Codex account separately, labelled like `m…@gmail.com · plus`.
 
 ### Antigravity Quota Unavailable
 ```

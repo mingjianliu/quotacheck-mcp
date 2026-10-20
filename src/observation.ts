@@ -68,7 +68,7 @@ export function redact(value: unknown): unknown {
 export function classifyError(message: string): CollectionError {
     // Status codes must stand alone: "error 4013" or a timestamp containing 429 is not one.
     const kind: ErrorKind = /\b429\b|rate.?limited|too many requests|rate limit (?:exceeded|reached)/i.test(message) ? 'rate_limited'
-        : /\b40[13]\b|unauthori[sz]ed|keychain|sign.?in|not signed in|signed.?out|\blog.?in\b|logged.?(?:in|out)|session expired|no saved session|captcha/i.test(message) ? 'authentication'
+        : /\b40[13]\b|unauthori[sz]ed|keychain|sign.?in|not signed in|signed.?out|\blog.?in\b|logged.?(?:in|out)|authentication required|not authenticated|session expired|no saved session|captcha/i.test(message) ? 'authentication'
             : /timeout|timed out/i.test(message) ? 'timeout'
                 : /unsupported|ENOENT/i.test(message) ? 'unsupported'
                     : /parse|extract quota|no quota rows|no rate limit/i.test(message) ? 'parse'
@@ -88,6 +88,11 @@ export function normalizeSnapshot(snapshot: QuotaSnapshot): Observation {
 }
 export function toLegacySnapshot(o: Observation): QuotaSnapshot {
     const snapshot: QuotaSnapshot = { source: o.source, collectedAt: o.observedAt };
+    if (o.accountKey && o.accountKey !== 'unknown')
+        snapshot.accountKey = o.accountKey;
+    const account = o.extensions.account as { label?: unknown } | undefined;
+    if (typeof account?.label === 'string')
+        snapshot.accountLabel = account.label;
     if (o.error)
         snapshot.error = o.error.message;
     const subs: SubModelBucket[] = [];

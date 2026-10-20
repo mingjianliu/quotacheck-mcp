@@ -400,3 +400,19 @@ describe("cycle splitting around a reset", () => {
     expect(series.cycles[1].peakPct).toBe(5);
   });
 });
+
+describe("accounts", () => {
+  it("keeps each signed-in account as its own report, filing failures under the current one", () => {
+    const codex = (offsetMs: number, pct: number, accountKey?: string, error?: string): QuotaSnapshot => ({
+      source: "codex",
+      collectedAt: at(offsetMs),
+      ...(accountKey ? { accountKey, accountLabel: `${accountKey}-label` } : {}),
+      ...(error ? { error } : { weekly: { used: pct, limit: 100, pct } }),
+    });
+    const r = report([codex(0, 10, "chatgpt:a"), codex(HOUR, 0, undefined, "boom"), codex(2 * HOUR, 70, "chatgpt:b"), codex(3 * HOUR, 12, "chatgpt:a")]);
+    expect(r.sources.map((s) => [s.accountKey, s.accountLabel, s.series[0].points.map((p) => p.pct), s.errorCount])).toEqual([
+      ["chatgpt:a", "chatgpt:a-label", [10, 12], 1],
+      ["chatgpt:b", "chatgpt:b-label", [70], 0],
+    ]);
+  });
+});
