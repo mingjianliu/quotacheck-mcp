@@ -25,17 +25,104 @@ struct QuotaSnapshot: Codable, Hashable {
     let subModels: [SubModelBucket]?
 }
 
+/// Outcome of one `quotacheck` invocation.
+struct CLIResult {
+    let status: Int32
+    let stdout: Data
+    let stderr: Data
+}
+
+enum QuotacheckCLI {
+    /// PATH for child processes.
+    ///
+    /// A GUI app inherits launchd's minimal PATH, so `quotacheck` installed with
+    /// nvm, volta, fnm or asdf (and the `node` its shebang needs) is invisible.
+    /// The user's login shell knows the real PATH; ask it once and keep the
+    /// common install locations as a fallback.
+    static let searchPath: String = {
+        let home = NSHomeDirectory()
+        let fallback = [
+            "\(home)/.local/bin", "\(home)/.volta/bin", "\(home)/.asdf/shims",
+            "\(home)/.local/share/fnm/aliases/default/bin", "\(home)/.nvm/current/bin",
+            "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
+        ]
+        var parts: [String] = []
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let marker = "__QUOTACHECK_PATH__"
+        if let out = try? QuotacheckCLI.run(URL(fileURLWithPath: shell),
+                              ["-ilc", "printf '\(marker)%s\(marker)' \"$PATH\""],
+                              path: nil, timeout: 5),
+           out.status == 0,
+           let text = String(data: out.stdout, encoding: .utf8),
+           let start = text.range(of: marker),
+           let end = text.range(of: marker, range: start.upperBound..<text.endIndex) {
+            parts = text[start.upperBound..<end.lowerBound].split(separator: ":").map(String.init)
+        }
+        for p in fallback + (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
+        where !parts.contains(p) {
+            parts.append(p)
+        }
+        return parts.joined(separator: ":")
+    }()
+
+    static func quotacheck(_ args: [String]) throws -> CLIResult {
+        try QuotacheckCLI.run(URL(fileURLWithPath: "/usr/bin/env"), ["quotacheck"] + args, path: QuotacheckCLI.searchPath, timeout: 60)
+    }
+
+    /// Run a child to completion, draining stdout and stderr concurrently so a
+    /// chatty child can never block on a full pipe while we wait for it.
+    static func run(_ executable: URL, _ args: [String], path: String?, timeout: TimeInterval) throws -> CLIResult {
+        let task = Process()
+        task.executableURL = executable
+        task.arguments = args
+        if let path {
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = path
+            task.environment = env
+        }
+        let outPipe = Pipe(), errPipe = Pipe()
+        task.standardOutput = outPipe
+        task.standardError = errPipe
+        task.standardInput = FileHandle.nullDevice
+        try task.run()
+
+        // A box rather than a captured var: Dispatch closures are @Sendable.
+        final class Box { var data = Data() }
+        let err = Box()
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            err.data = errPipe.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+        let killer = DispatchWorkItem { if task.isRunning { task.terminate() } }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: killer)
+        let out = outPipe.fileHandleForReading.readDataToEndOfFile()
+        group.wait()
+        task.waitUntilExit()
+        killer.cancel()
+        return CLIResult(status: task.terminationStatus, stdout: out, stderr: err.data)
+    }
+}
+
 class Fetcher: ObservableObject {
     @Published var snapshots: [QuotaSnapshot] = []
     @Published var isRefreshing = false
     @Published var lastError: String? = nil
+    @Published var reportError: String? = nil
     @Published var isBuildingReport = false
     private var pollTimer: Timer?
+    /// Main-thread only. A poll is skipped while one is still running, so a slow
+    /// CLI cannot pile up processes.
+    private var inFlight = 0
+
+    /// The view only reads stored observations; the service collects every few minutes.
+    static let pollInterval: TimeInterval = 30
 
     func startPolling() {
         guard pollTimer == nil else { return }
         refresh()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        pollTimer = Timer.scheduledTimer(withTimeInterval: Fetcher.pollInterval, repeats: true) { [weak self] _ in
             self?.refresh()
         }
     }
@@ -53,40 +140,24 @@ class Fetcher: ObservableObject {
     func openReport(days: Int = 30) {
         DispatchQueue.main.async {
             self.isBuildingReport = true
-            self.lastError = nil
+            self.reportError = nil
         }
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = "\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
-            task.environment = env
-            // GUI processes need an explicit PATH to find the installed quotacheck CLI.
-            task.arguments = ["quotacheck", "report", "--days", String(days)]
-
-            let pipe = Pipe()
-            let errPipe = Pipe()
-            task.standardOutput = pipe
-            task.standardError = errPipe
-
             do {
-                try task.run()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-                task.waitUntilExit()
+                let result = try QuotacheckCLI.quotacheck(["report", "--days", String(days)])
 
-                guard task.terminationStatus == 0 else {
-                    let errStr = String(data: errData, encoding: .utf8) ?? "Unknown"
+                guard result.status == 0 else {
+                    let errStr = String(data: result.stderr, encoding: .utf8) ?? "Unknown"
                     DispatchQueue.main.async {
-                        self.lastError = "Report failed (\(task.terminationStatus)): \(errStr.prefix(200))"
+                        self.reportError = "Report failed (\(result.status)): \(errStr.prefix(200))"
                         self.isBuildingReport = false
                     }
                     return
                 }
 
-                // The script prints the written path on its last line.
-                let outStr = String(data: data, encoding: .utf8) ?? ""
+                // The CLI prints the written path on its last line.
+                let outStr = String(data: result.stdout, encoding: .utf8) ?? ""
                 let path = outStr
                     .components(separatedBy: .newlines)
                     .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -94,90 +165,65 @@ class Fetcher: ObservableObject {
 
                 DispatchQueue.main.async {
                     self.isBuildingReport = false
-                    guard let path, FileManager.default.fileExists(atPath: path) else {
-                        self.lastError = "Report path not found in output."
+                    guard let path = path, FileManager.default.fileExists(atPath: path) else {
+                        self.reportError = "Report path not found in output."
                         return
                     }
                     NSWorkspace.shared.open(URL(fileURLWithPath: path))
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self.lastError = error.localizedDescription
+                    self.reportError = error.localizedDescription
                     self.isBuildingReport = false
                 }
             }
         }
     }
-    
+
+    /// Read stored quotas. `force` also asks the service to collect; it answers
+    /// asynchronously, so its readings arrive on a later poll.
     func refresh(force: Bool = false) {
-        // Run on main thread for UI updates
         DispatchQueue.main.async {
+            // A manual refresh still goes through: the service coalesces requests.
+            if self.inFlight > 0 && !force { return }
+            self.inFlight += 1
             self.isRefreshing = true
-            self.lastError = nil
+            DispatchQueue.global(qos: .userInitiated).async { self.load(force: force) }
         }
-        
-        DispatchQueue.global(qos: .userInitiated).async {
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = "\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
-            task.environment = env
-            // This CLI reads stored data; only the background service contacts providers.
-            task.arguments = ["quotacheck", "legacy"] + (force ? ["--refresh"] : [])
-            
-            let pipe = Pipe()
-            let errPipe = Pipe()
-            task.standardOutput = pipe
-            task.standardError = errPipe
-            
-            do {
-                try task.run()
-                task.waitUntilExit()
-                
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-                
-                if task.terminationStatus == 0 {
+    }
+
+    private func load(force: Bool) {
+        var snapshots: [QuotaSnapshot]? = nil
+        var failure: String? = nil
+        do {
+            let result = try QuotacheckCLI.quotacheck(["legacy"] + (force ? ["--refresh"] : []))
+            if result.status == 0 {
+                let rawStr = String(data: result.stdout, encoding: .utf8) ?? ""
+                // Find the first line that looks like a JSON array
+                let jsonLine = rawStr.components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .first(where: { $0.hasPrefix("[") && $0.hasSuffix("]") })
+                if let validJson = jsonLine, let data = validJson.data(using: .utf8) {
                     do {
-                        let rawStr = String(data: data, encoding: .utf8) ?? ""
-                        // Find the first line that looks like a JSON array
-                        let jsonLine = rawStr.components(separatedBy: .newlines).first(where: { 
-                            $0.trimmingCharacters(in: .whitespaces).hasPrefix("[") && 
-                            $0.trimmingCharacters(in: .whitespaces).hasSuffix("]")
-                        })?.trimmingCharacters(in: .whitespaces)
-                        
-                        guard let validJson = jsonLine else {
-                            throw NSError(domain: "Quotacheck", code: 1, userInfo: [NSLocalizedDescriptionKey: "No valid JSON found in output."])
-                        }
-                        
-                        let decoder = JSONDecoder()
-                        let result = try decoder.decode([QuotaSnapshot].self, from: validJson.data(using: .utf8)!)
-                        DispatchQueue.main.async {
-                            self.snapshots = result
-                            self.isRefreshing = false
-                        }
+                        snapshots = try JSONDecoder().decode([QuotaSnapshot].self, from: data)
                     } catch {
-                        let rawStr = String(data: data, encoding: .utf8) ?? "binary data"
-                        print("Parse error: \(error)")
-                        print("Raw data: \(rawStr)")
-                        DispatchQueue.main.async {
-                            self.lastError = "Parse error: \(error.localizedDescription)\nData: \(rawStr.prefix(200))"
-                            self.isRefreshing = false
-                        }
+                        failure = "Parse error: \(error.localizedDescription)\nData: \(rawStr.prefix(200))"
                     }
                 } else {
-                    let errStr = String(data: errData, encoding: .utf8) ?? "Unknown"
-                    DispatchQueue.main.async {
-                        self.lastError = "Command failed (\(task.terminationStatus)): \(errStr)"
-                        self.isRefreshing = false
-                    }
+                    failure = "No valid JSON found in output.\nData: \(rawStr.prefix(200))"
                 }
-            } catch {
-                DispatchQueue.main.async {
-                    self.lastError = error.localizedDescription
-                    self.isRefreshing = false
-                }
+            } else {
+                let errStr = String(data: result.stderr, encoding: .utf8) ?? "Unknown"
+                failure = "Command failed (\(result.status)): \(errStr.prefix(500))"
             }
+        } catch {
+            failure = error.localizedDescription
+        }
+        DispatchQueue.main.async {
+            if let snapshots { self.snapshots = snapshots }
+            self.lastError = failure
+            self.inFlight -= 1
+            self.isRefreshing = self.inFlight > 0
         }
     }
 }
@@ -262,7 +308,7 @@ struct ContentView: View {
             .padding(.bottom, 4)
             
             // Error Message (if execution/fetch fails)
-            if let err = fetcher.lastError {
+            if let err = fetcher.lastError ?? fetcher.reportError {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(.red)
@@ -337,7 +383,7 @@ struct ContentView: View {
                     Image(systemName: "arrow.triangle.2.circlepath")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
-                    Text("Background collection · view updates every 5s")
+                    Text("Background collection · view updates every \(Int(Fetcher.pollInterval))s")
                         .font(.system(.caption2, design: .rounded))
                         .foregroundColor(.secondary)
                 }
