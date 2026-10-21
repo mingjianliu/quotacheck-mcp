@@ -110,7 +110,8 @@ Alternatively, add it to a project's `.mcp.json`:
   "collectionIntervalMs": 300000,
   "collectionIntervals": {},
   "staleAfterMs": 900000,
-  "collectorTimeoutMs": 90000
+  "collectorTimeoutMs": 90000,
+  "tokenStatsEnabled": true
 }
 ```
 
@@ -317,6 +318,15 @@ its account and plan, then one row per window:
 - the share used, or with **%/h** the burn rate over the last three hours of the cycle
   and the projected level at the reset;
 - the reset countdown, or "runs out HH:mm" when the pace beats the reset.
+
+Below the cards, **Tokens** charts the last 24 hours in 15-minute bars, coloured by agent,
+with each agent's total and the five most recent sessions (title, project, tokens). It is
+read from the logs Claude Code (`~/.claude/projects`) and Codex (`~/.codex/sessions`)
+already keep on this Mac, counted as Agent HUD documents: each Claude message once,
+fork history and Codex's inherited totals not again, sub-agents within their session.
+Logs are read incrementally; only counts and session titles are cached
+(`tokens-cache.json`), never messages, and nothing leaves the machine. Set
+`"tokenStatsEnabled": false` to turn it off.
 
 Shared-limit groups (Antigravity's model families, a second Codex bucket) get a heading,
 Codex shows its available usage-reset credits, Claude's extra usage shows its spend, and

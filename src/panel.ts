@@ -1,4 +1,7 @@
+import { homedir } from 'node:os';
+import { loadConfig } from './config.js';
 import { getQuotas } from './query.js';
+import { readTokenStats, type TokenStats } from './tokens.js';
 import { ObservationStore } from './store.js';
 import type { Observation, QuotaLimit } from './observation.js';
 import type { SourceId } from './types.js';
@@ -57,6 +60,8 @@ export interface Panel {
     /** The window under most pressure, for the menu bar title. */
     headline?: { source: SourceId; label: string; pct: number; tier: Tier };
     sources: PanelSource[];
+    /** The last day's tokens from local agent logs; absent when switched off or unreadable. */
+    tokens?: TokenStats;
 }
 
 const NAMES: Record<SourceId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', antigravity: 'Antigravity', 'gemini-web': 'Gemini' };
@@ -190,7 +195,7 @@ function resetCreditsOf(o: Observation): PanelSource['resetCredits'] {
     return { available: summary.availableCount, ...(expiries.length ? { firstExpiresAt: new Date(expiries[0]).toISOString() } : {}) };
 }
 
-export function getPanel(home: string, now = new Date()): Panel {
+export function getPanel(home: string, now = new Date(), opts: { userHome?: string } = {}): Panel {
     const quotas = getQuotas(home, {}, now);
     const history = new ObservationStore(home).readNew(new Date(now.getTime() - RATE_WINDOW_MS - HOUR).toISOString(), new Date(now.getTime() + 1).toISOString()).observations;
     const sources: PanelSource[] = quotas.sources.map(s => {
@@ -213,5 +218,13 @@ export function getPanel(home: string, now = new Date()): Panel {
     const rank: Record<Tier, number> = { ok: 0, warn: 1, critical: 2 };
     const all = sources.flatMap(s => s.freshness === 'missing' ? [] : s.windows.filter(w => !w.unit).map(w => ({ source: s.source, label: w.groupLabel ? `${w.groupLabel} · ${w.label}` : w.label, pct: w.pct, tier: w.tier })));
     const headline = all.sort((a, b) => rank[b.tier] - rank[a.tier] || b.pct - a.pct)[0];
-    return { generatedAt: now.toISOString(), ...(quotas.storageError ? { storageError: quotas.storageError } : {}), ...(headline ? { headline } : {}), sources };
+    let tokens: TokenStats | undefined;
+    if (loadConfig({ homeDir: home }).tokenStatsEnabled) {
+        try {
+            // Agent logs live in the user's real home, whatever home root quotacheck keeps its data in.
+            tokens = readTokenStats(home, { now, userHome: opts.userHome ?? homedir() });
+        }
+        catch { /* the quotas still show */ }
+    }
+    return { generatedAt: now.toISOString(), ...(quotas.storageError ? { storageError: quotas.storageError } : {}), ...(headline ? { headline } : {}), sources, ...(tokens ? { tokens } : {}) };
 }

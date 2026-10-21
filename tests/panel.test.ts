@@ -43,7 +43,7 @@ describe("panel", () => {
   it("works out burn rate, projection and an early warning from history", async () => {
     // Session climbs 20 points an hour: 40% now, out of quota in 3 h, reset in 2 h.
     const home = await seed([claude(NOW - 2 * HOUR, 0, 10), claude(NOW - HOUR, 20, 11), claude(NOW, 40, 12)]);
-    const panel = getPanel(home, new Date(NOW));
+    const panel = getPanel(home, new Date(NOW), { userHome: home });
     const src = panel.sources.find((s) => s.source === "claude-code")!;
     expect(src.account).toEqual({ label: "s…@example.com · max", plan: "max" });
     const [session, weekly] = src.windows;
@@ -55,7 +55,7 @@ describe("panel", () => {
 
   it("warns before 70% when the pace runs out before the reset", async () => {
     const home = await seed([claude(NOW - HOUR, 30, 5, NOW + 4 * HOUR), claude(NOW, 60, 5, NOW + 4 * HOUR)]);
-    const session = getPanel(home, new Date(NOW)).sources[0].windows[0];
+    const session = getPanel(home, new Date(NOW), { userHome: home }).sources[0].windows[0];
     expect(session).toMatchObject({ pct: 60, burnPerHour: 30, projectedPct: 100, tier: "warn" });
     expect(Date.parse(session.runsOutAt!)).toBe(NOW + (40 / 30) * HOUR);
   });
@@ -83,7 +83,7 @@ describe("panel", () => {
   it("shows Codex reset credits and keeps the account label", async () => {
     const raw = { rateLimits: { primary: { usedPercent: 49, windowDurationMins: 10080 } }, rateLimitResetCredits: { availableCount: 2, credits: [{ id: "b", expiresAt: 1794000000, grantedAt: 1, resetType: "x", status: "available" }, { id: "a", expiresAt: 1793000000, grantedAt: 1, resetType: "x", status: "available" }] } };
     const home = await seed([{ source: "codex", collectedAt: new Date(NOW).toISOString(), accountKey: "chatgpt:x", limits: codexLimits(raw), extensions: { response: raw, account: { type: "chatgpt", planType: "pro", label: "s…@example.com · pro" } } }]);
-    const src = getPanel(home, new Date(NOW)).sources.find((s) => s.source === "codex")!;
+    const src = getPanel(home, new Date(NOW), { userHome: home }).sources.find((s) => s.source === "codex")!;
     expect(src.resetCredits).toEqual({ available: 2, firstExpiresAt: new Date(1793000000 * 1000).toISOString() });
     expect(src.windows[0]).toMatchObject({ label: "Weekly", pct: 49 });
     expect(src.windows[0].groupLabel).toBeUndefined();
@@ -92,7 +92,7 @@ describe("panel", () => {
 
   it("lists enabled sources without data as missing, with their error", async () => {
     const home = await seed([claude(NOW, 1, 1)]);
-    const missing = getPanel(home, new Date(NOW)).sources.find((s) => s.source === "gemini-web")!;
+    const missing = getPanel(home, new Date(NOW), { userHome: home }).sources.find((s) => s.source === "gemini-web")!;
     expect(missing).toMatchObject({ freshness: "missing", windows: [] });
   });
 });
@@ -106,9 +106,22 @@ describe("grouped windows", () => {
       { group: "Gemini Models", window: "Five Hour Limit Remaining", remaining: 69, period: "5h" },
     ]);
     const home = await seed([{ source: "antigravity", collectedAt: new Date(NOW).toISOString(), limits }]);
-    const panel = getPanel(home, new Date(NOW));
+    const panel = getPanel(home, new Date(NOW), { userHome: home });
     const rows = panel.sources.find((s) => s.source === "antigravity")!.windows.map((w) => [w.groupLabel, w.label, w.tier]);
     expect(rows).toEqual([["Claude and GPT models", "Weekly", "critical"], ["Gemini Models", "5-hour", "ok"], ["Gemini Models", "Weekly", "ok"]]);
     expect(panel.headline).toMatchObject({ label: "Claude and GPT models · Weekly", pct: 93 });
+  });
+});
+
+describe("token chart", () => {
+  it("adds the day's tokens from local agent logs, unless switched off", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const home = await seed([claude(NOW, 1, 1)]);
+    const dir = join(home, ".claude", "projects", "p");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "s.jsonl"), JSON.stringify({ type: "assistant", sessionId: "s", cwd: "/x/proj", timestamp: new Date(NOW - HOUR).toISOString(), message: { id: "m", model: "claude-opus-5-5", usage: { input_tokens: 7, output_tokens: 3 } } }) + "\n");
+    expect(getPanel(home, new Date(NOW), { userHome: home }).tokens?.totals["claude-code"]?.total).toBe(10);
+    writeFileSync(join(home, ".config", "quotacheck-mcp", "config.json"), JSON.stringify({ tokenStatsEnabled: false }));
+    expect(getPanel(home, new Date(NOW), { userHome: home }).tokens).toBeUndefined();
   });
 });

@@ -9,6 +9,38 @@ struct PanelData: Decodable {
     let storageError: String?
     let headline: Headline?
     let sources: [PanelSource]
+    let tokens: TokenStats?
+}
+
+/// The last day's tokens from Claude Code and Codex logs on this Mac.
+struct TokenStats: Decodable {
+    struct Totals: Decodable {
+        let input: Double
+        let output: Double
+        let cacheRead: Double
+        let total: Double
+    }
+    struct Model: Decodable {
+        let source: String
+        let model: String
+        let total: Double
+    }
+    struct Session: Decodable {
+        let source: String
+        let id: String
+        let title: String
+        let project: String?
+        let lastAt: String
+        let total: Double
+        let model: String?
+        var key: String { "\(source)/\(id)" }
+    }
+    let since: String
+    let bucketMs: Double
+    let buckets: [String: [Double]]
+    let totals: [String: Totals]
+    let models: [Model]
+    let sessions: [Session]
 }
 
 struct Headline: Decodable {
@@ -662,6 +694,9 @@ struct ContentView: View {
                         ForEach(panel.sources) { source in
                             SourceSection(source: source, mode: mode)
                         }
+                        if let tokens = panel.tokens, !tokens.totals.isEmpty {
+                            TokensSection(tokens: tokens)
+                        }
                     }
                 }
             } else {
@@ -744,6 +779,125 @@ struct ContentView: View {
     private var updatedText: String {
         guard let at = fetcher.panel.flatMap({ parseISO($0.generatedAt) }) else { return "" }
         return "Updated \(clock(at)) · every \(Int(Fetcher.pollInterval))s"
+    }
+}
+
+func compact(_ n: Double) -> String {
+    if n >= 1e9 { return String(format: "%.1fB", n / 1e9) }
+    if n >= 1e6 { return String(format: "%.1fM", n / 1e6) }
+    if n >= 1e3 { return String(format: "%.1fK", n / 1e3) }
+    return String(format: "%.0f", n)
+}
+
+/// Stacked bars, one per 15 minutes over the last day, one colour per agent.
+struct TokenChart: View {
+    let stats: TokenStats
+    static let order = ["claude-code", "codex"]
+
+    private var count: Int { stats.buckets.values.map { $0.count }.max() ?? 0 }
+
+    private func value(_ source: String, _ i: Int) -> Double {
+        guard let row = stats.buckets[source], i < row.count else { return 0 }
+        return row[i]
+    }
+
+    var body: some View {
+        let n = count
+        let sums = (0..<n).map { i in TokenChart.order.reduce(0.0) { $0 + value($1, i) } }
+        let peak = max(sums.max() ?? 0, 1)
+        let since = parseISO(stats.since) ?? Date()
+        GeometryReader { geo in
+            HStack(alignment: .bottom, spacing: 1) {
+                ForEach(0..<n, id: \.self) { i in
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        ForEach(Array(TokenChart.order.reversed()), id: \.self) { source in
+                            let v = value(source, i)
+                            if v > 0 {
+                                Rectangle()
+                                    .fill(Palette.source(source))
+                                    .frame(height: max(1, CGFloat(v / peak) * geo.size.height))
+                            }
+                        }
+                        if sums[i] == 0 {
+                            Rectangle().fill(Palette.track).frame(height: 1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .help("\(clock(since.addingTimeInterval(Double(i) * stats.bucketMs / 1000))) · \(compact(sums[i])) tokens")
+                }
+            }
+        }
+        .frame(height: 46)
+    }
+}
+
+struct TokensSection: View {
+    let tokens: TokenStats
+
+    private var total: Double { tokens.totals.values.reduce(0) { $0 + $1.total } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Tokens")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+                Spacer()
+                Text("24h · \(compact(total)) tok")
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundColor(Palette.secondary)
+            }
+            TokenChart(stats: tokens)
+            // The bars are coloured by agent, so the legend is too; models are in its tooltips.
+            HStack(spacing: 14) {
+                ForEach(TokenChart.order.filter { tokens.totals[$0] != nil }, id: \.self) { source in
+                    HStack(spacing: 4) {
+                        Circle().fill(Palette.source(source)).frame(width: 6, height: 6)
+                        Text(Fetcher.shortName(source))
+                            .font(.system(size: 10.5))
+                            .foregroundColor(Palette.secondary)
+                        Text(compact(tokens.totals[source]?.total ?? 0))
+                            .font(.system(size: 10.5).monospacedDigit())
+                            .foregroundColor(Palette.tertiary)
+                    }
+                    .help(tokens.models.filter { $0.source == source }.map { "\($0.model): \(compact($0.total))" }.joined(separator: "\n"))
+                }
+            }
+            if !tokens.sessions.isEmpty {
+                Text("Sessions")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Palette.secondary)
+                    .padding(.top, 2)
+                ForEach(tokens.sessions, id: \.key) { session in
+                    HStack(spacing: 8) {
+                        Circle().fill(Palette.source(session.source)).frame(width: 6, height: 6)
+                        Text(session.title)
+                            .font(.system(size: 12))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        if let project = session.project, project != session.title {
+                            Text(project)
+                                .font(.system(size: 11))
+                                .foregroundColor(Palette.tertiary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 6)
+                        Text(compact(session.total))
+                            .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                            .foregroundColor(Palette.secondary)
+                        Text(parseISO(session.lastAt).map { ageText(Date().timeIntervalSince($0) * 1000) } ?? "")
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundColor(Palette.tertiary)
+                            .frame(width: 58, alignment: .trailing)
+                    }
+                    .help(session.model.map { "\(session.title)\n\($0)" } ?? session.title)
+                }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Palette.card))
     }
 }
 

@@ -22,6 +22,8 @@ const ConfigSchema = z.object({
   collectionIntervals: z.record(z.number().int().min(1000)),
   staleAfterMs: z.number().int().min(1000),
   collectorTimeoutMs: z.number().int().min(1000),
+  /** Read Claude Code and Codex logs on this machine for the panel's token chart. */
+  tokenStatsEnabled: z.boolean(),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -60,6 +62,7 @@ export function loadConfig(opts: { homeDir?: string } = {}): Config {
     collectionIntervals: {},
     staleAfterMs: 900000,
     collectorTimeoutMs: 90000,
+    tokenStatsEnabled: true,
   };
 
   const path = join(home, ".config", "quotacheck-mcp", "config.json");
