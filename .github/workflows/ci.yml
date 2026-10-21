@@ -25,3 +25,12 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  macos-app:
+    # The only place the SwiftUI menu bar app can be compiled.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: swiftc --version
+      - run: macos/build.sh
+      - run: test -x macos/Quotacheck.app/Contents/MacOS/Quotacheck

@@ -13,7 +13,7 @@ async function main() {
     const { command, input, home: given, id } = parseCli(process.argv.slice(2));
     const home = given ?? process.env.QUOTACHECK_HOME ?? homedir();
     if (command === 'help' || command === '--help') {
-        console.log('quotacheck <quotas|history|status|refresh|legacy|daemon|install-service|report|export|login> [--home PATH]\n  history --from ISO --to ISO [--granularity raw|5m|30m|1h|1d] [--page-size N] [--cursor TOKEN] [--include-raw]\n  quotas/history: --sources ID,... --account-keys KEY,... --limit-ids ID,...\n  report [--days N] [--sources ID,...] [--out FILE] [--max-points N]; export OBSERVATION_ID (redacted raw JSON); login SOURCE (gemini-web)');
+        console.log('quotacheck <quotas|history|status|refresh|legacy|panel|daemon|install-service|report|export|login> [--home PATH]\n  history --from ISO --to ISO [--granularity raw|5m|30m|1h|1d] [--page-size N] [--cursor TOKEN] [--include-raw]\n  quotas/history: --sources ID,... --account-keys KEY,... --limit-ids ID,...\n  report [--days N] [--sources ID,...] [--out FILE] [--max-points N]; export OBSERVATION_ID (redacted raw JSON); login SOURCE (gemini-web)');
         return;
     }
     if (command === 'daemon') {
@@ -38,6 +38,11 @@ async function main() {
         const cli=current.endsWith('.ts')?join(dirname(current),'..','dist','cli.js'):current;
         if(!existsSync(cli))throw Error('Run npm run build before installing the service');
         console.log(installService(home, process.execPath, cli));
+        return;
+    }
+    if (command === 'panel') {
+        const { getPanel } = await import('./panel.js');
+        console.log(JSON.stringify(getPanel(home)));
         return;
     }
     if (command === 'legacy') {

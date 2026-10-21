@@ -302,10 +302,26 @@ The following commands are available from the root of the project:
 
 > [!NOTE]
 > The app runs inside your menu bar as an agent (`LSUIElement` in `Info.plist`). It only
-> reads what the background service stores, by running `quotacheck legacy` every 30
-> seconds while the panel is open; the refresh button also asks the service to collect.
-> It finds `quotacheck` through your login shell's `PATH`, so nvm, volta, fnm and asdf
-> installs work.
+> reads what the background service stores, by running `quotacheck panel` every 30
+> seconds; the refresh button asks the service to collect and says what it answered
+> (collecting, next allowed at, or service offline). It finds `quotacheck` through your
+> login shell's `PATH`, so nvm, volta, fnm and asdf installs work.
+
+The menu bar title shows the quota under most pressure. The panel, styled after
+[Agent HUD](https://github.com/jazzenchen/agent-hud-open)'s, has one card per source with
+its account and plan, then one row per window:
+
+- a dot and bar coloured green under 70% used, yellow from 70%, red from 90%, and yellow
+  early when the current pace runs out before the reset;
+- a faint extension of the bar to where the current pace lands at the reset;
+- the share used, or with **%/h** the burn rate over the last three hours of the cycle
+  and the projected level at the reset;
+- the reset countdown, or "runs out HH:mm" when the pace beats the reset.
+
+Shared-limit groups (Antigravity's model families, a second Codex bucket) get a heading,
+Codex shows its available usage-reset credits, Claude's extra usage shows its spend, and
+a source that failed keeps its last readings under the error and the next retry time.
+`quotacheck panel` prints the same model as JSON.
 
 ### Build and Run
 
@@ -320,13 +336,6 @@ installed compatible SDK through `SWIFTC_FLAGS`:
 ```bash
 SWIFTC_FLAGS="-sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk -target arm64-apple-macosx15.0" macos/build.sh
 ```
-
-### Collapsible Accordion UI
-
-Each provider in the macOS menu bar panel features a fold/unfold chevron button:
-- **Expanded state**: Shows individual quota bars (Session, Weekly, Extra Usage) with custom percentage fills (coloring changes dynamically from blue to orange/red depending on utilization).
-- **Collapsed state**: Minimizes the provider card, saving screen space when monitoring multiple sources.
-- Animated using native SwiftUI transition styles.
 
 ---
 
